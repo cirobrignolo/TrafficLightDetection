@@ -1,0 +1,10 @@
+{
+    "heat_map_a": 8,
+    "output_dim": 10,
+    "group_height": 7,
+    "group_width": 7,
+    "pooled_height": 7,
+    "pooled_width": 7,
+    "pad_ratio": 0.0,
+    "sample_per_part": 4
+}

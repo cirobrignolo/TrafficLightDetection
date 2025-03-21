@@ -1,0 +1,23 @@
+{
+    "num_class": 3,
+    "rpn_proposal_output_score": true,
+    "regress_agnostic": false,
+    "min_size_h": 8.8008,
+    "min_size_w": 8.8008,
+    "min_size_mode": "HEIGHT_OR_WIDTH",
+    "threshold_objectness": 0.1,
+    "thresholds": [
+        0.1,
+        0.1,
+        0.1
+    ],
+    "refine_out_of_map_bbox": true,
+    "nms_param": {
+        "overlap_ratio": 0.5,
+        "top_n": 5,
+        "max_candidate_n": 300,
+        "use_soft_nms": false,
+        "voting": false,
+        "vote_iou": 0.6
+    }
+}

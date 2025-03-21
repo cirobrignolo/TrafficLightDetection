@@ -1,0 +1,52 @@
+{
+    "heat_map_a": 8,
+    "min_size_h": 6.16056,
+    "min_size_w": 6.16056,
+    "min_size_mode": "HEIGHT_OR_WIDTH",
+    "threshold_objectness": 0.2,
+    "gen_anchor_param": {
+        "anchor_widths": [
+            9.232984,
+            16.0,
+            27.712813,
+            18.465969,
+            32.0,
+            55.425626,
+            36.931937,
+            64.0,
+            110.851252,
+            73.863875,
+            128.0,
+            221.702503,
+            147.72775,
+            256.0,
+            443.405007
+        ],
+        "anchor_heights": [
+            27.72668,
+            16.0,
+            9.237604,
+            55.453359,
+            32.0,
+            18.475209,
+            110.906719,
+            64.0,
+            36.950417,
+            221.813438,
+            128.0,
+            73.900834,
+            443.626876,
+            256.0,
+            147.801669
+        ]
+    },
+    "refine_out_of_map_bbox": true,
+    "nms_param": {
+        "overlap_ratio": 0.7,
+        "top_n": 300,
+        "max_candidate_n": 3000,
+        "use_soft_nms": false,
+        "voting": false,
+        "vote_iou": 0.7
+    }
+}
