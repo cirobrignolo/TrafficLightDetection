@@ -5,6 +5,7 @@ from tlr.recognizer import Recognizer
 from tlr.hungarian_optimizer import HungarianOptimizer
 from tlr.tools.utils import preprocess4det, preprocess4rec, restore_boxes_to_full_image, nms, boxes2projections
 from tlr.selector import select_tls
+from tlr.tracking import TrafficLightTracker, REVISE_TIME_S, BLINK_THRESHOLD_S, HYSTERETIC_THRESHOLD_COUNT
 import json
 import os
 
@@ -12,7 +13,7 @@ class Pipeline(nn.Module):
     """
     This class will be responsible for detecting and recognizing a single ROI.
     """
-    def __init__(self, detector, classifiers, ho, means_det, means_rec, device=None):
+    def __init__(self, detector, classifiers, ho, means_det, means_rec, device=None, tracker=None):
         super().__init__()
         self.detector = detector
         self.classifiers = classifiers
@@ -20,6 +21,8 @@ class Pipeline(nn.Module):
         self.means_rec = means_rec
         self.ho = ho
         self.device = device
+        self.tracker = tracker
+
     def detect(self, image, boxes):
         """bboxes should be a list of list, each sub-list is like [xmin, ymin, xmax, ymax]"""
         detected_boxes = []
@@ -33,6 +36,7 @@ class Pipeline(nn.Module):
         idxs = nms(detections[:, 1:5], 0.6)
         detections = detections[idxs]
         return detections
+
     def recognize(self, img, detections, tl_types):
         recognitions = []
         for detection, tl_type in zip(detections, tl_types):
@@ -43,27 +47,61 @@ class Pipeline(nn.Module):
             assert output.shape[0] == 1
             recognitions.append(output[0])
         return torch.vstack(recognitions).reshape(-1, 4)
-    def forward(self, img, boxes):
+
+    def forward(self, img, boxes, frame_ts=None):
         """img should not substract the means, if there's a perturbation, the perturbation should be added to the img
         return valid_detections, recognitions, assignments, invalid_detections
         """
+        """
+        :param img: Tensor [C,H,W]
+        :param boxes: lista de [x1,y1,x2,y2,id]
+        :param frame_ts: timestamp en segundos (float) para el tracker
+        :returns:
+            valid_detections (Tensor n×9),
+            recognitions      (Tensor n×4),
+            assignments       (Tensor m×2),
+            invalid_detections(Tensor k×9),
+            revised_states    (dict proj_id → (color, blink))  # si tracker no es None
+        """
+        # 1) Early exit si no hay cajas
         if len(boxes) == 0:
-            return torch.empty((0, 9), device=self.device), \
-                torch.empty((0, 4), device=self.device), \
-                torch.empty((0, 2), device=self.device), \
-                torch.empty((0, 9), device=self.device)
+            empty9 = torch.empty((0, 9), device=self.device)
+            empty4 = torch.empty((0, 4), device=self.device)
+            empty2 = torch.empty((0, 2), device=self.device)
+            revised = {} if self.tracker else None
+            return empty9, empty4, empty2, empty9, revised
+
+        # 2) Detección
         detections = self.detect(img, boxes)
+
+        # 3) Filtrado por tipo y asignación
         tl_types = torch.argmax(detections[:, 5:], dim=1)
-        valid_inds = tl_types != 0
-        valid_detections = detections[valid_inds]
-        invalid_detections = detections[~valid_inds]
+        valid_mask = tl_types != 0
+        valid_detections = detections[valid_mask]
+        invalid_detections = detections[~valid_mask]
         assignments = select_tls(self.ho, valid_detections, boxes2projections(boxes), img.shape).to(self.device)
+
+        # 4) Reconocimiento
         # Baidu Apollo only recognize the selected TLs, we recognize all valid detections.
         if len(valid_detections) != 0:
-            recognitions = self.recognize(img, valid_detections, tl_types[valid_inds])
+            recognitions = self.recognize(img, valid_detections, tl_types[valid_mask])
         else:
             recognitions = torch.empty((0, 4), device=self.device)
-        return valid_detections, recognitions, assignments, invalid_detections
+
+        # 5) TRACKING / REVISION TEMPORAL
+        revised = None
+        if self.tracker:
+            if frame_ts is None:
+                raise ValueError("Para usar tracking debes pasar frame_ts")
+            # assignments es tensor m×2; recognitions es tensor n×4
+            # convertimos a listas de Python para el tracker
+            assigns_list = assignments.cpu().tolist()
+            recs_list    = recognitions.cpu().tolist()
+            revised = self.tracker.track(frame_ts, assigns_list, recs_list)
+
+        return valid_detections, recognitions, assignments, invalid_detections, revised
+
+        #return valid_detections, recognitions, assignments, invalid_detections
 
 def load_pipeline(device=None):
     DIR = os.path.dirname(__file__)
@@ -109,5 +147,13 @@ def load_pipeline(device=None):
     classifiers = [(vert_recognizer, (96, 32, 3)), (quad_recognizer, (64, 64, 3)), (hori_recognizer, (32, 96, 3))]
 
     ho = HungarianOptimizer()
-    pipeline = Pipeline(detector, classifiers, ho, means_det, means_rec, device=device)
+
+    tracker = TrafficLightTracker(
+        history_size=5,
+        revise_time_s=REVISE_TIME_S,
+        blink_threshold_s=BLINK_THRESHOLD_S,
+        hysteretic_threshold=HYSTERETIC_THRESHOLD_COUNT
+    )
+    pipeline = Pipeline(detector, classifiers, ho, means_det, means_rec, device=device, tracker=tracker)
+
     return pipeline
