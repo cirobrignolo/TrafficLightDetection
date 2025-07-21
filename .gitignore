@@ -3,4 +3,7 @@ __pycache__
 build
 examples/
 frames_labeled/
+frames_auto_labeled/
 inputTesis/
+# Claude Code documentation
+CLAUDE.md

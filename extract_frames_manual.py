@@ -1,7 +1,7 @@
 import cv2
 import os
 
-video_path = 'inputTesis/Prueba2.MP4'
+video_path = 'inputTesis/semaforo_rojo_a_verde_cuadrado.mp4'
 output_dir = 'frames_labeled'
 os.makedirs(output_dir, exist_ok=True)
 

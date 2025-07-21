@@ -11,9 +11,10 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 from tlr.pipeline import load_pipeline
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
-input_dir      = 'frames_labeled'
-bbox_file      = os.path.join(input_dir, 'projection_bboxes_master.txt')
-output_dir     = os.path.join(input_dir, 'outputs_with_tracking')
+#input_dir = 'frames_labeled'
+input_dir = 'frames_auto_labeled'
+bbox_file = os.path.join(input_dir, 'projection_bboxes_master.txt')
+output_dir = os.path.join(input_dir, 'outputs_with_tracking')
 os.makedirs(output_dir, exist_ok=True)
 
 # ─── CARGA DEL PIPELINE (CON TRACKING) ─────────────────────────────────────────

@@ -8,7 +8,8 @@ if len(sys.argv) != 2:
 
 image_path = sys.argv[1]
 image_name = os.path.basename(image_path)
-output_path = "frames_labeled/projection_bboxes_master.txt"
+#output_path = "frames_labeled/projection_bboxes_master.txt"
+output_path = "frames_auto_labeled/projection_bboxes_master.txt"
 
 image = cv2.imread(image_path)
 if image is None:
@@ -20,7 +21,7 @@ id_counter = 0
 drawing = False
 x_start, y_start = -1, -1
 
-scale = 0.5
+scale = 1
 resized = cv2.resize(clone, (0, 0), fx=scale, fy=scale)
 
 def draw_rectangle(event, x, y, flags, param):
