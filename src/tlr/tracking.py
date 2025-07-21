@@ -74,24 +74,31 @@ class SemanticDecision:
                 self.history[proj_id] = SemanticTable(proj_id, frame_ts, color)
             st = self.history[proj_id]
 
-            # lógica de parpadeo e histéresis simplificada:
+            # APOLLO'S HYSTERESIS LOGIC: Only when changing FROM black
             dt = frame_ts - st.time_stamp
             if color == "yellow" and dt < self.blink_threshold_s:
                 # muñeco intermitente → no cambio de estado
                 st.blink = True
             else:
                 st.blink = False
-                # histéresis: solo aceptar cambio tras X apariciones
-                if st.color != color:
+                
+                # Apply hysteresis ONLY when changing FROM black (unknown state)
+                if st.color == "black":
+                    # Conservative: need evidence to leave unknown state
                     if st.hysteretic_color == color:
                         st.hysteretic_count += 1
                     else:
                         st.hysteretic_color = color
                         st.hysteretic_count = 1
-
+                    
+                    # Only change FROM black with sufficient evidence
                     if st.hysteretic_count > self.hysteretic_threshold:
                         st.color = color
                         st.hysteretic_count = 0
+                else:
+                    # Between known states (red/green/yellow), update immediately
+                    st.color = color
+                    st.hysteretic_count = 0
 
             # actualizar timestamps
             st.time_stamp = frame_ts
@@ -116,7 +123,6 @@ class TrafficLightTracker:
     (por ejemplo, resetear estados tras N frames).
     """
     def __init__(self,
-                 history_size: int = 5,
                  **semantic_kwargs):
         self.semantic = SemanticDecision(**semantic_kwargs)
         self.frame_counter = 0

@@ -97,7 +97,7 @@ def nms(boxes, thresh_iou):
     y2 = boxes[:, 3]
 
     # calculate area of every block in P
-    areas = (x2 - x1 + 1) * (y2 - y1 + 1)
+    areas = (x2 - x1) * (y2 - y1)
 
     # initialise an empty list for 
     # filtered prediction boxes

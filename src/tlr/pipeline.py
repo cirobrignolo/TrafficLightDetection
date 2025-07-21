@@ -33,7 +33,7 @@ class Pipeline(nn.Module):
             detected_boxes.append(bboxes)
         detections = restore_boxes_to_full_image(image, detected_boxes, projections)
         detections = torch.vstack(detections).reshape(-1, 9)
-        idxs = nms(detections[:, 1:5], 0.6)
+        idxs = nms(detections[:, 1:5], 0.7)
         detections = detections[idxs]
         return detections
 
@@ -44,9 +44,16 @@ class Pipeline(nn.Module):
             recognizer, shape = self.classifiers[tl_type-1]
             input = preprocess4rec(img, det_box, shape, self.means_rec)
             output = recognizer(input.permute(2, 0, 1).unsqueeze(0))
-            assert output.shape[0] == 1
-            recognitions.append(output[0])
-        return torch.vstack(recognitions).reshape(-1, 4)
+            # APOLLO'S CONFIDENCE THRESHOLD
+            max_prob = torch.max(output[0])
+            if max_prob < 0.5:  # Apollo's threshold
+                # Force to BLACK (index 0)
+                forced_output = torch.zeros_like(output[0])
+                forced_output[0] = 1.0  # BLACK = 100% confidence
+                recognitions.append(forced_output)
+            else:
+                recognitions.append(output[0])
+        return torch.vstack(recognitions).reshape(-1, 4) if recognitions else torch.empty((0, 4), device=self.device)
 
     def forward(self, img, boxes, frame_ts=None):
         """img should not substract the means, if there's a perturbation, the perturbation should be added to the img
@@ -122,7 +129,7 @@ def load_pipeline(device=None):
     im_info = [270, 270]
 
     detector = TLDetector(bbox_reg_param, detection_output_ssd_param, dfmb_psroi_pooling_param, rcnn_bbox_reg_param, rcnn_detection_output_ssd_param, im_info, device=device)
-    detector.load_state_dict(torch.load(f'{DIR}/weights/tl.torch'))
+    detector.load_state_dict(torch.load(f'{DIR}/weights/tl.torch', weights_only=False))
     detector = detector.to(device)
     detector.eval();
 
@@ -133,15 +140,15 @@ def load_pipeline(device=None):
     hori_recognizer = Recognizer(hori_pool_params)
     vert_recognizer = Recognizer(vert_pool_params)
 
-    quad_recognizer.load_state_dict(torch.load(f'{DIR}/weights/quad.torch'))
+    quad_recognizer.load_state_dict(torch.load(f'{DIR}/weights/quad.torch', weights_only=False))
     quad_recognizer = quad_recognizer.to(device)
     quad_recognizer.eval();
 
-    hori_recognizer.load_state_dict(torch.load(f'{DIR}/weights/hori.torch'))
+    hori_recognizer.load_state_dict(torch.load(f'{DIR}/weights/hori.torch', weights_only=False))
     hori_recognizer = hori_recognizer.to(device)
     hori_recognizer.eval();
 
-    vert_recognizer.load_state_dict(torch.load(f'{DIR}/weights/vert.torch'))
+    vert_recognizer.load_state_dict(torch.load(f'{DIR}/weights/vert.torch', weights_only=False))
     vert_recognizer = vert_recognizer.to(device)
     vert_recognizer.eval();
     classifiers = [(vert_recognizer, (96, 32, 3)), (quad_recognizer, (64, 64, 3)), (hori_recognizer, (32, 96, 3))]
@@ -149,7 +156,6 @@ def load_pipeline(device=None):
     ho = HungarianOptimizer()
 
     tracker = TrafficLightTracker(
-        history_size=5,
         revise_time_s=REVISE_TIME_S,
         blink_threshold_s=BLINK_THRESHOLD_S,
         hysteretic_threshold=HYSTERETIC_THRESHOLD_COUNT
