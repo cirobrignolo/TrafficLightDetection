@@ -38,21 +38,47 @@ class Pipeline(nn.Module):
         return detections
 
     def recognize(self, img, detections, tl_types):
+        """
+        Recognition with EXACT Apollo Prob2Color logic
+        Apollo status_map: {BLACK=0, RED=1, YELLOW=2, GREEN=3}
+        """
         recognitions = []
+        # status_names = ['BLACK', 'RED', 'YELLOW', 'GREEN']  # For debugging
+        
         for detection, tl_type in zip(detections, tl_types):
             det_box = detection[1:5].type(torch.long)
             recognizer, shape = self.classifiers[tl_type-1]
             input = preprocess4rec(img, det_box, shape, self.means_rec)
-            output = recognizer(input.permute(2, 0, 1).unsqueeze(0))
-            # APOLLO'S CONFIDENCE THRESHOLD
-            max_prob = torch.max(output[0])
-            if max_prob < 0.5:  # Apollo's threshold
-                # Force to BLACK (index 0)
-                forced_output = torch.zeros_like(output[0])
-                forced_output[0] = 1.0  # BLACK = 100% confidence
-                recognitions.append(forced_output)
+            
+            # Apollo preprocessing: subtract means and apply scale
+            input_scaled = input.permute(2, 0, 1).unsqueeze(0)  # NCHW format
+            # Apollo uses scale=0.01 after mean subtraction
+            input_scaled = input_scaled * 0.01
+            
+            # Get raw probabilities from model
+            output_probs = recognizer(input_scaled)[0]  # [4]
+            
+            # Apollo's EXACT Prob2Color logic
+            max_prob, max_idx = torch.max(output_probs, dim=0)
+            threshold = 0.5  # Apollo's classify_threshold
+            
+            # Apollo's decision: if max_prob > threshold use max_idx, else force BLACK (0)
+            if max_prob > threshold:
+                color_id = max_idx.item()
             else:
-                recognitions.append(output[0])
+                color_id = 0  # Force to BLACK like Apollo does
+                
+            # Create one-hot result (Apollo style)
+            result = torch.zeros_like(output_probs)
+            result[color_id] = 1.0
+            
+            # Apollo-style logging (uncomment for debug)
+            # print(f"Light status recognized as {status_names[color_id]}")
+            # print(f"Color Prob: {output_probs.tolist()}")
+            # print(f"Max prob: {max_prob:.4f}, Threshold: {threshold}")
+            
+            recognitions.append(result)
+            
         return torch.vstack(recognitions).reshape(-1, 4) if recognitions else torch.empty((0, 4), device=self.device)
 
     def forward(self, img, boxes, frame_ts=None):

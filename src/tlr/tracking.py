@@ -77,28 +77,34 @@ class SemanticDecision:
             # APOLLO'S HYSTERESIS LOGIC: Only when changing FROM black
             dt = frame_ts - st.time_stamp
             if color == "yellow" and dt < self.blink_threshold_s:
-                # muñeco intermitente → no cambio de estado
+                # APOLLO'S SAFETY RULE: Yellow blinking → treat as RED for safety
                 st.blink = True
+                # Override color to RED following Apollo's safety principle
+                color = "red"
             else:
                 st.blink = False
+            
+            # APOLLO'S SEQUENCE SAFETY RULE: "Any yellow after red is reset to red for safety"
+            if color == "yellow" and st.color == "red":
+                color = "red"  # Keep as red until green displays
                 
-                # Apply hysteresis ONLY when changing FROM black (unknown state)
-                if st.color == "black":
-                    # Conservative: need evidence to leave unknown state
-                    if st.hysteretic_color == color:
-                        st.hysteretic_count += 1
-                    else:
-                        st.hysteretic_color = color
-                        st.hysteretic_count = 1
-                    
-                    # Only change FROM black with sufficient evidence
-                    if st.hysteretic_count > self.hysteretic_threshold:
-                        st.color = color
-                        st.hysteretic_count = 0
+            # Apply hysteresis ONLY when changing FROM black (unknown state)
+            if st.color == "black":
+                # Conservative: need evidence to leave unknown state
+                if st.hysteretic_color == color:
+                    st.hysteretic_count += 1
                 else:
-                    # Between known states (red/green/yellow), update immediately
+                    st.hysteretic_color = color
+                    st.hysteretic_count = 1
+                
+                # Only change FROM black with sufficient evidence
+                if st.hysteretic_count > self.hysteretic_threshold:
                     st.color = color
                     st.hysteretic_count = 0
+            else:
+                # Between known states (red/green/yellow), update immediately
+                st.color = color
+                st.hysteretic_count = 0
 
             # actualizar timestamps
             st.time_stamp = frame_ts
