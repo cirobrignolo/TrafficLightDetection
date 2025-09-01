@@ -8,5 +8,10 @@ robustness_tests/
 inputTesis/
 perception/
 perception recortado/
+test_retroalimentacion_bbox/frames_flecha_roja
+test_retroalimentacion_bbox/outputs
+test_retroalimentacion_bbox/test_retroalimentacion_bbox
+test_retroalimentacion_bbox/test_frames_conocidos/outputs
+test_original_video_nuevo/
 # Claude Code documentation
 CLAUDE.md

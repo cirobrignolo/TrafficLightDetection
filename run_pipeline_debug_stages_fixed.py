@@ -94,7 +94,7 @@ for frame_idx, (frame_name, bboxes) in enumerate(entries.items()):
         x1, y1, x2, y2 = map(int, det[1:5])
         det_scores = det[5:9].tolist()
         tl_type = int(torch.argmax(det[5:9]))
-        type_names = ['bg', 'vert', 'quad', 'hori']
+        type_names = ['vert', 'quad', 'hori', 'bg']
         
         all_detection_lines.append(
             f"{frame_name},VALID,{det_idx},{x1},{y1},{x2},{y2},"
@@ -107,7 +107,7 @@ for frame_idx, (frame_name, bboxes) in enumerate(entries.items()):
         x1, y1, x2, y2 = map(int, det[1:5])
         det_scores = det[5:9].tolist()
         tl_type = int(torch.argmax(det[5:9]))
-        type_names = ['bg', 'vert', 'quad', 'hori']
+        type_names = ['vert', 'quad', 'hori', 'bg']
         
         all_detection_lines.append(
             f"{frame_name},INVALID,{det_idx},{x1},{y1},{x2},{y2},"
@@ -129,7 +129,7 @@ for frame_idx, (frame_name, bboxes) in enumerate(entries.items()):
         x1, y1, x2, y2 = map(int, det[1:5])
         det_scores = det[5:9].tolist()  # [vert, quad, hori, bg]
         tl_type = int(torch.argmax(det[5:9]))
-        type_names = ['bg', 'vert', 'quad', 'hori']
+        type_names = ['vert', 'quad', 'hori', 'bg']
         
         detection_lines.append(
             f"{frame_name},{det_idx},{x1},{y1},{x2},{y2},"
@@ -149,7 +149,7 @@ for frame_idx, (frame_name, bboxes) in enumerate(entries.items()):
         pred_cls = int(torch.argmax(recognitions[det_idx])) if det_idx < len(recognitions) else 0
         pred_color = ['black','red','yellow','green'][pred_cls]
         tl_type = int(torch.argmax(det[5:9]))
-        type_names = ['bg', 'vert', 'quad', 'hori']
+        type_names = ['vert', 'quad', 'hori', 'bg']
         
         recognition_lines.append(
             f"{frame_name},{det_idx},{x1},{y1},{x2},{y2},"
@@ -170,7 +170,7 @@ for frame_idx, (frame_name, bboxes) in enumerate(entries.items()):
         pred_cls = int(torch.argmax(recognitions[det_idx])) if det_idx < len(recognitions) else 0
         pred_color = ['black','red','yellow','green'][pred_cls]
         tl_type = int(torch.argmax(det[5:9]))
-        type_names = ['bg', 'vert', 'quad', 'hori']
+        type_names = ['vert', 'quad', 'hori', 'bg']
         
         # Obtener resultado de tracking
         proj_id = assign_map.get(det_idx, -1)
@@ -207,7 +207,7 @@ for frame_idx, (frame_name, bboxes) in enumerate(entries.items()):
         x1, y1, x2, y2 = map(int, det[1:5])
         det_scores = det[5:9].tolist()
         tl_type = int(torch.argmax(det[5:9]))
-        type_names = ['bg', 'vert', 'quad', 'hori']
+        type_names = ['vert', 'quad', 'hori', 'bg']
         
         cv2.rectangle(img_detection, (x1, y1), (x2, y2), (0, 255, 0), 3)
         info_text = f"Det{det_idx}: {type_names[tl_type]} ({det_scores[tl_type]:.2f})"
