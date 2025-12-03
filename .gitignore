@@ -20,5 +20,7 @@ test_original_video_nuevo/frame_*
 test_swapping_fixed_results/
 test_swapping_cross_history_transfer_results/
 debug_blinking_results/
+test_doble_chico/
+test_doble_grande/
 # Claude Code documentation
 CLAUDE.md

@@ -148,6 +148,10 @@ def nms(boxes, thresh_iou):
         # find the IoU of every prediction in P with S
         IoU = inter / union
 
+        # APOLLO FIX: Use abs() like Apollo does (detection.cc:404)
+        # Safety measure against numerical errors
+        IoU = torch.abs(IoU)
+
         # keep the boxes with IoU less than thresh_iou
         mask = IoU <= thresh_iou
         idxs = idxs[mask]
@@ -258,19 +262,42 @@ def restore_boxes_to_full_image(image, detections, projections, start_col=1):
     """
     detections is a list of the output of each projection, each is in shape (n, 9)
     this func will convert the the detected boxes from the ROI's location to the full image's location
+    
+    FIXED: Apollo coordinate scaling bug
+    Original pipeline was adding crop offsets directly to 270x270 detector coordinates.
+    Apollo's correct sequence: 1) Scale detector coords to crop size, 2) Add crop offsets
     """
     ret = []
     assert len(detections) == len(projections), f'{len(detections)} == {len(projections)}'
+    detector_size = 270  # Apollo's hardcoded detector input size
+    
     for detection, projection in zip(detections, projections):
         # for i in range(detection.shape[0]):
         #     if detection[i][0] < 0:
         #         detection = detection[:i]
         #         break
         xl, xr, yt, yb = crop(image.shape, projection)
-        detection[:, start_col] += xl
-        detection[:, start_col+1] += yt
-        detection[:, start_col+2] += xl
-        detection[:, start_col+3] += yt
+        
+        # Calculate actual crop size (like Apollo's inflate_col/inflate_row)
+        crop_width = xr - xl + 1
+        crop_height = yb - yt + 1
+        scale_x = crop_width / detector_size
+        scale_y = crop_height / detector_size
+        
+        # Step 1: Scale detector coordinates (270x270) to actual crop size
+        # Following Apollo's logic from detection.cc:329-334
+        detection[:, start_col] *= scale_x      # x1 * inflate_col
+        detection[:, start_col+1] *= scale_y    # y1 * inflate_row  
+        detection[:, start_col+2] *= scale_x    # x2 * inflate_col
+        detection[:, start_col+3] *= scale_y    # y2 * inflate_row
+        
+        # Step 2: Add crop offsets to convert to full image coordinates
+        # Following Apollo's logic from detection.cc:355-356
+        detection[:, start_col] += xl           # x += crop_box.x
+        detection[:, start_col+1] += yt         # y += crop_box.y
+        detection[:, start_col+2] += xl         # x += crop_box.x
+        detection[:, start_col+3] += yt         # y += crop_box.y
+        
         ret.append(detection)
     return ret
 

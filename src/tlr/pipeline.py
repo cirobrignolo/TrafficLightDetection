@@ -33,8 +33,19 @@ class Pipeline(nn.Module):
             detected_boxes.append(bboxes)
         detections = restore_boxes_to_full_image(image, detected_boxes, projections)
         detections = torch.vstack(detections).reshape(-1, 9)
-        idxs = nms(detections[:, 1:5], 0.7)
-        detections = detections[idxs]
+
+        # APOLLO FIX: Sort by score BEFORE NMS (like Apollo does in detection.cc:381-390)
+        # detections[:, 0] contains detect_score
+        # Apollo sorts ASCENDING and processes from back (highest score first)
+        scores = detections[:, 0]
+        sorted_indices = torch.argsort(scores, descending=True)  # Sort descending (highest first)
+        detections_sorted = detections[sorted_indices]
+
+        # Apply NMS on sorted detections
+        # APOLLO FIX: Use threshold 0.6 like Apollo (detection.h:87: iou_thresh = 0.6)
+        idxs = nms(detections_sorted[:, 1:5], 0.6)
+        detections = detections_sorted[idxs]
+
         return detections
 
     def recognize(self, img, detections, tl_types):
