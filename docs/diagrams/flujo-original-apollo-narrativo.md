@@ -30,53 +30,54 @@ Signal {
 }
 ```
 
-### ¿Qué es el Semantic ID?
+### ⚠️ ¿Qué es el Semantic ID? (NOTA: NO IMPLEMENTADO EN APOLLO)
+
+**IMPORTANTE**: El `semantic_id` está **DISEÑADO en el código pero NO IMPLEMENTADO** en Apollo. Conceptualmente debería agrupar semáforos del mismo cruce, pero en la práctica siempre vale `0`.
+
+**Cómo DEBERÍA funcionar (diseño teórico)**:
 
 El `semantic_id` agrupa semáforos que pertenecen al **mismo cruce o intersección** y que están **funcionalmente relacionados**.
 
-**Ejemplo de un cruce típico:**
+**Ejemplo teórico de un cruce:**
 
 ```
-Intersección Main St. y 5th Ave:
+Intersección Main St. y 5th Ave (EJEMPLO TEÓRICO):
 
 ┌─────────────────────────────────────┐
 │  Semáforo A (vehicular Norte)      │
 │    - id: "signal_12345"             │
-│    - semantic_id: 100    ┌────┐     │
-│    - (x,y,z): (500, 1200, 5) │ 🚦│    │
+│    - semantic_id: 100    ┌────┐     │  ← En teoría, debería ser 100
+│    - (x,y,z): (500, 1200, 5) │ 🚦│    │  ← En práctica, SIEMPRE es 0
 │                          └────┘     │
 ├─────────────────────────────────────┤
 │  Semáforo B (vehicular Sur)        │
 │    - id: "signal_12346"             │
-│    - semantic_id: 100    ┌────┐     │
-│    - (x,y,z): (502, 1198, 5) │ 🚦│    │
+│    - semantic_id: 100    ┌────┐     │  ← En teoría, debería ser 100
+│    - (x,y,z): (502, 1198, 5) │ 🚦│    │  ← En práctica, SIEMPRE es 0
 │                          └────┘     │
 ├─────────────────────────────────────┤
 │  Semáforo C (vehicular Este)       │
 │    - id: "signal_12347"             │
-│    - semantic_id: 100    ┌────┐     │
-│    - (x,y,z): (498, 1202, 5) │ 🚦│    │
-│                          └────┘     │
-├─────────────────────────────────────┤
-│  Semáforo D (peatonal)              │
-│    - id: "signal_12348"             │
-│    - semantic_id: 101    ┌────┐     │
-│    - (x,y,z): (501, 1199, 4) │ 🚶│    │
+│    - semantic_id: 100    ┌────┐     │  ← En teoría, debería ser 100
+│    - (x,y,z): (498, 1202, 5) │ 🚦│    │  ← En práctica, SIEMPRE es 0
 │                          └────┘     │
 └─────────────────────────────────────┘
 ```
 
-**Observaciones importantes:**
-- Los 3 semáforos vehiculares (A, B, C) comparten `semantic_id = 100`
-- El semáforo peatonal tiene `semantic_id = 101` (diferente porque tiene lógica distinta)
-- Cada semáforo tiene su propio `id` único
-- Los semantic IDs son **persistentes**: No cambian entre frames
+**Realidad en Apollo:**
+- ❌ El HD-Map proto `Signal` **NO tiene** campo `semantic_id`
+- ❌ El código SIEMPRE asigna `semantic = 0` (línea 335 de `traffic_light_region_proposal_component.cc`)
+- ❌ La documentación oficial NO menciona semantic grouping
+- ✅ El HD-Map SÍ tiene `overlap_id` (para conectar signals con lanes), pero es diferente
+- ✅ El código de tracking SÍ tiene lógica para voting por grupos, pero nunca se usa
 
-**¿Por qué es útil agruparlos?**
+**¿Por qué SERÍA útil si estuviera implementado?**
 
 1. **Voting**: Si detecto A=GREEN, B=GREEN, C=BLACK → por mayoría, corrijo C a GREEN
-2. **Consistencia temporal**: El grupo comparte un historial, no cada semáforo individual
-3. **Reglas de tránsito**: Todos los semáforos vehiculares del mismo cruce cambian de forma coordinada
+2. **Consistencia temporal**: El grupo compartiría un historial, no cada semáforo individual
+3. **Reglas de tránsito**: Todos los semáforos vehiculares del mismo cruce cambiarían de forma coordinada
+
+**Ver ETAPA 5: TRACKING** para más detalles sobre el impacto de esta NO-implementación.
 
 ---
 
@@ -113,10 +114,32 @@ El sistema recibe cuatro entradas fundamentales:
 
 **Archivo**: `traffic_light_region_proposal_component.cc:343-377`
 
+**⚠️ Dependencia Crítica: Car Pose** (`GetCarPose` línea 487-516)
+
+Antes de consultar el HD-Map, Apollo necesita saber dónde está el vehículo:
+
+```cpp
+// Obtener pose del vehículo desde sistema de localización
+GetCarPose(timestamp, &pose);
+
+// pose contiene:
+// - pose.pose_: Transformación car→world (posición GPS+IMU+odometry)
+// - pose.c2w_poses_[camera_name]: Transformación de CADA cámara al mundo
+//   Ejemplo: c2w_poses_["front_6mm"], c2w_poses_["front_25mm"]
+```
+
+**Impacto en testing**:
+- ❌ **Pose incorrecta** → Busca signals en ubicación equivocada del mapa
+- ❌ **c2w_pose con error de rotación** (ej: 5°) → Proyección 3D→2D desalineada
+- ❌ **Delay en pose** (ej: 0.5s) → Obtiene signals donde el auto YA NO está
+
+---
+
 Apollo consulta el HD-Map con la posición actual del vehículo:
 
 ```cpp
 // Línea 357-359
+Eigen::Vector3d car_position = pose->getCarPosition();
 if (!hd_map_->GetSignals(car_position, forward_distance_to_query_signals, &signals)) {
   // forward_distance_to_query_signals = 150.0 metros
 }
@@ -124,19 +147,47 @@ if (!hd_map_->GetSignals(car_position, forward_distance_to_query_signals, &signa
 
 **Pregunta**: *"Dame todos los semáforos que están dentro de un radio de 150 metros desde mi posición"*
 
+**Implementación interna de `GetSignals`** (`hdmap_impl.cc:357-373`):
+
+```cpp
+// Línea 357: Implementación de GetSignals
+int HDMapImpl::GetSignals(const Vec2d& point, double distance,
+                          std::vector<SignalInfoConstPtr>* signals) const {
+  signals->clear();
+  std::vector<std::string> ids;
+
+  // Buscar en KDTree todos los signals cercanos
+  SearchObjects(point, distance, *signal_segment_kdtree_, &ids);
+
+  // Para cada ID encontrado, obtener el SignalInfo completo
+  for (const auto& id : ids) {
+    signals->emplace_back(GetSignalById(CreateHDMapId(id)));
+  }
+  return 0;
+}
+```
+
 **Respuesta del HD-Map** (ejemplo):
 
 ```cpp
 signals = [
-  Signal {
-    id: "signal_12345",
-    semantic_id: 100,
-    boundary: [(500.23, 1200.45, 5.12), (500.28, 1200.50, 5.92), ...]
+  SignalInfo {
+    signal_.id: "signal_12345",
+    signal_.boundary: {
+      point[0]: {x: 500.23, y: 1200.45, z: 5.12},
+      point[1]: {x: 500.28, y: 1200.50, z: 5.12},
+      point[2]: {x: 500.28, y: 1200.50, z: 5.92},
+      point[3]: {x: 500.23, y: 1200.45, z: 5.92}
+    },
+    signal_.type: MIX_3_VERTICAL,
+    signal_.stop_line: [...],
+    signal_.overlap_id: ["lane_123", "lane_124"],  // ← Conecta con lanes
+    // ⚠️ NO tiene semantic_id
   },
-  Signal {
-    id: "signal_12346",
-    semantic_id: 100,
-    boundary: [(502.10, 1198.30, 5.15), (502.15, 1198.35, 5.95), ...]
+  SignalInfo {
+    signal_.id: "signal_12346",
+    signal_.boundary: [(502.10, 1198.30, 5.15), ...],
+    ...
   },
   ... (total: 8 semáforos)
 ]
@@ -144,8 +195,10 @@ signals = [
 
 **Observar**:
 - Cada semáforo viene del HD-Map con su `id` único
-- Ya traen asignado el `semantic_id` (es información del mapa, NO se calcula)
-- Las coordenadas son en el sistema de coordenadas mundial (metros)
+- ✅ SÍ tiene `overlap_id[]` para conectar con lanes
+- ❌ **NO** tiene `semantic_id` en el proto del HD-Map
+- Las coordenadas `boundary` son en el sistema de coordenadas mundial (metros)
+- `SignalInfo` es un wrapper que contiene el proto `Signal` del HD-Map
 
 #### **Paso 2: Generación de TrafficLight objects**
 
@@ -154,13 +207,13 @@ signals = [
 Para cada signal del HD-Map, crea un objeto `TrafficLight`:
 
 ```cpp
-// Línea 324-338
+// Línea 323-340
 for (auto signal : signals) {
   base::TrafficLightPtr light;
   light.reset(new base::TrafficLight);
   light->id = signal.id().id();                    // Copia el ID del HD-Map
 
-  // Copia los puntos del contorno 3D
+  // Copia los puntos del contorno 3D (boundary del Signal proto)
   for (int i = 0; i < signal.boundary().point_size(); ++i) {
     base::PointXYZID point;
     point.x = signal.boundary().point(i).x();
@@ -169,8 +222,12 @@ for (auto signal : signals) {
     light->region.points.push_back(point);
   }
 
-  light->semantic = signal.semantic_id();          // Copia el semantic_id
+  // ⚠️ AQUÍ ES DONDE SE HARDCODEA semantic_id = 0
+  int cur_semantic = 0;  // ← Línea 335: SIEMPRE 0, nunca lee del mapa
+
+  light->semantic = cur_semantic;  // ← Línea 337: Asigna 0 a todos
   traffic_lights->push_back(light);
+  stoplines_ = signal.stop_line();
 }
 ```
 
@@ -180,8 +237,8 @@ for (auto signal : signals) {
 TrafficLight {
   // ✅ Campos llenos
   id: "signal_12345"
-  semantic: 100
-  region.points: [(500.23, 1200.45, 5.12), ...]  // Puntos 3D del contorno
+  semantic: 0  // ← ⚠️ SIEMPRE 0, no importa el cruce o intersección
+  region.points: [(500.23, 1200.45, 5.12), ...]  // Puntos 3D del boundary
 
   // ❌ Campos vacíos (aún no calculados)
   region.projection_roi: [0, 0, 0, 0]
@@ -199,52 +256,123 @@ TrafficLight {
 
 #### **Paso 3: Proyección 3D → 2D**
 
-**Archivo**: `tl_preprocessor.cc:236-272`
+**Archivo**: `tl_preprocessor.cc:236-272` y `multi_camera_projection.cc:86-189`
 
-Para cada `TrafficLight`, proyecta sus puntos 3D a coordenadas 2D en la imagen:
+Para cada `TrafficLight`, proyecta sus puntos 3D (`region.points`) a coordenadas 2D en la imagen:
 
 ```cpp
-// Línea 258-269
+// tl_preprocessor.cc:258-269
 for (size_t i = 0; i < lights->size(); ++i) {
   auto light = lights->at(i);
 
-  // projection_.Project() hace la transformación geométrica:
-  // 3D (mundo) → 3D (cámara) → 2D (imagen)
+  // projection_.Project() hace la transformación geométrica completa
   if (!projection_.Project(pose, ProjectOption(camera_name), light.get())) {
     // No se puede proyectar (está detrás de la cámara, muy lejos, etc.)
     light->region.outside_image = true;
     lights_outside_image->push_back(light);
   } else {
-    // Proyección exitosa
+    // Proyección exitosa → llena light->region.projection_roi
     light->region.outside_image = false;
     lights_on_image->push_back(light);
   }
 }
 ```
 
-**Cálculo de proyección** (simplificado):
+**Implementación detallada de `Project()`** (`multi_camera_projection.cc:86-112`):
 
-```python
-# 1. Transformar del mundo al sistema de cámara
-P_camera = T_camera_to_world^-1 × pose × P_world
+```cpp
+// Línea 86-112
+bool MultiCamerasProjection::Project(const camera::CarPose& pose,
+                                     const ProjectOption& option,
+                                     base::TrafficLight* light) const {
+  // Obtener la matriz de transformación cámara→mundo (c2w)
+  Eigen::Matrix4d c2w_pose = pose.c2w_poses_.at(option.camera_name);
 
-# 2. Proyectar a 2D usando matriz intrínseca K
-[u, v, w] = K × P_camera
-x_pixel = u / w
-y_pixel = v / w
+  // Delegar a BoundaryBasedProject que hace la proyección real
+  return BoundaryBasedProject(camera_models_.at(option.camera_name),
+                              c2w_pose,
+                              light->region.points,  // ← Puntos 3D del boundary
+                              light);
+}
+```
 
-# 3. Calcular bounding box que contiene todos los puntos proyectados
-x_min = min(x_pixel de todos los puntos)
-y_min = min(y_pixel de todos los puntos)
-x_max = max(x_pixel de todos los puntos)
-y_max = max(y_pixel de todos los puntos)
+**Implementación de `BoundaryBasedProject()`** (`multi_camera_projection.cc:139-189`):
 
-projection_roi = [x_min, y_min, x_max - x_min, y_max - y_min]
+```cpp
+// Línea 139-189
+bool MultiCamerasProjection::BoundaryBasedProject(
+    const base::BrownCameraDistortionModelPtr camera_model,
+    const Eigen::Matrix4d& c2w_pose,
+    const std::vector<base::PointXYZID>& points,  // ← Boundary del Signal
+    base::TrafficLight* light) const {
+
+  int width = camera_model->get_width();   // 1920
+  int height = camera_model->get_height(); // 1080
+  int bound_size = points.size();          // 4 puntos (cuadrilátero)
+
+  EigenVector<Eigen::Vector2i> pts2d(bound_size);
+  auto c2w_pose_inverse = c2w_pose.inverse();  // Invertir para obtener w2c
+
+  // Para cada punto del boundary del Signal
+  for (int i = 0; i < bound_size; ++i) {
+    const auto& pt3d_world = points.at(i);  // Punto 3D en coordenadas mundo
+
+    // 1. Transformar de mundo a cámara
+    Eigen::Vector3d pt3d_cam =
+        (c2w_pose_inverse *
+         Eigen::Vector4d(pt3d_world.x, pt3d_world.y, pt3d_world.z, 1.0))
+            .head(3);
+
+    // Verificar que no esté detrás de la cámara
+    if (pt3d_cam[2] <= 0.0) {
+      return false;  // Punto detrás de la cámara
+    }
+
+    // 2. Proyectar de 3D cámara a 2D imagen (usando K y distorsión Brown)
+    pts2d[i] = camera_model->Project(pt3d_cam.cast<float>()).cast<int>();
+    // ⚠️ Usa calibración de cámara: focal length, centro óptico, distorsión
+    // Impacto en testing: Calibración incorrecta → projection_roi desalineado
+  }
+
+  // 3. Calcular bounding box que envuelve todos los puntos proyectados
+  int min_x = std::numeric_limits<int>::max();
+  int max_x = std::numeric_limits<int>::min();
+  int min_y = std::numeric_limits<int>::max();
+  int max_y = std::numeric_limits<int>::min();
+
+  for (const auto& pt : pts2d) {
+    min_x = std::min(pt[0], min_x);
+    max_x = std::max(pt[0], max_x);
+    min_y = std::min(pt[1], min_y);
+    max_y = std::max(pt[1], max_y);
+  }
+
+  // 4. Crear ROI y verificar que esté dentro de la imagen
+  base::BBox2DI roi(min_x, min_y, max_x, max_y);
+  if (camera::OutOfValidRegion(roi, width, height) || roi.Area() == 0) {
+    return false;  // Proyección fuera de la imagen
+  }
+
+  // ✅ AQUÍ SE ASIGNA EL PROJECTION_ROI
+  light->region.projection_roi = base::RectI(roi);
+  return true;
+}
 ```
 
 **Ejemplo numérico**:
-- Semáforo #1 en 3D: puntos entre (500.23, 1200.45, 5.12) y (500.28, 1200.50, 5.92)
-- Después de proyección → `projection_roi = [850, 300, 40, 80]` píxeles
+- **Input**: Semáforo #1 con boundary 3D:
+  ```
+  points = [
+    (500.23, 1200.45, 5.12),  // Esquina inferior izquierda
+    (500.28, 1200.50, 5.12),  // Esquina inferior derecha
+    (500.28, 1200.50, 5.92),  // Esquina superior derecha
+    (500.23, 1200.45, 5.92)   // Esquina superior izquierda
+  ]
+  ```
+- **Transformación mundo→cámara**: Aplica `c2w_pose_inverse`
+- **Proyección a 2D**: Puntos proyectados: `[(850, 380), (890, 378), (890, 298), (850, 300)]`
+- **Bounding box**: `min_x=850, max_x=890, min_y=298, max_y=380`
+- **Output**: `projection_roi = [850, 298, 40, 82]` píxeles (x, y, width, height)
 
 #### **Paso 4: Selección de cámara (multi-cámara)**
 
@@ -321,8 +449,8 @@ Una lista de objetos `TrafficLight`, donde cada uno representa un semáforo del 
 TrafficLight {
   // ✅ Campos del HD-Map (persistentes entre frames)
   id: "signal_12345"                    // ID único del semáforo
-  semantic: 100                         // ID de grupo (para voting/tracking)
-  region.points: [(x,y,z), ...]         // Puntos 3D del contorno
+  semantic: 0                           // ⚠️ SIEMPRE 0 (no agrupa por cruce)
+  region.points: [(x,y,z), ...]         // Puntos 3D del boundary (Signal proto)
 
   // ✅ Campos calculados en proyección
   region.projection_roi: [850, 300, 40, 80]  // Dónde DEBERÍA aparecer en imagen
@@ -448,23 +576,41 @@ crop_->getCropBox(img_width, img_height, light, &cbox);
 // crop_ es un objeto CropBox con crop_scale=2.5
 ```
 
-**Cálculo interno de CropBox**:
+**Cálculo interno de CropBox** (`cropbox.cc:26-79`):
 ```python
 projection_roi = [850, 300, 40, 80]  # [x, y, width, height]
 
+# 1. Calcular centro
 center_x = 850 + 40/2 = 870
 center_y = 300 + 80/2 = 340
 
-new_width = 40 × 2.5 = 100
-new_height = 80 × 2.5 = 200
+# 2. ⚠️ IMPORTANTE: Usa MAX(width, height) para hacer crop CUADRADO
+max_dim = max(40, 80) = 80
+resize = max_dim × crop_scale_ = 80 × 2.5 = 200
 
-crop_roi.x = center_x - new_width/2 = 870 - 50 = 820
-crop_roi.y = center_y - new_height/2 = 340 - 100 = 240
-crop_roi.width = 100
-crop_roi.height = 200
+# 3. Aplicar mínimo (típicamente min_crop_size=270)
+resize = max(resize, min_crop_size_) = max(200, 270) = 270
 
-# Resultado: crop_roi = [820, 240, 100, 200]
+# 4. Clipping para no exceder imagen (1920×1080)
+resize = min(resize, img_width) = min(270, 1920) = 270
+resize = min(resize, img_height) = min(270, 1080) = 270
+
+# 5. Crear cuadrado centrado
+crop_roi.x = center_x - resize/2 + 1 = 870 - 135 + 1 = 736
+crop_roi.y = center_y - resize/2 + 1 = 340 - 135 + 1 = 206
+crop_roi.width = 270
+crop_roi.height = 270
+
+# 6. Ajustar si excede bordes de imagen (clamp)
+if crop_roi.x < 0: crop_roi.x = 0
+if crop_roi.y < 0: crop_roi.y = 0
+if (crop_roi.x + 270) >= 1920: ajustar hacia izquierda
+if (crop_roi.y + 270) >= 1080: ajustar hacia arriba
+
+# Resultado: crop_roi = [736, 206, 270, 270]  ← CUADRADO
 ```
+
+**⚠️ Diferencia clave**: El crop es SIEMPRE cuadrado, no rectangular. Usa la dimensión más grande del projection_roi.
 
 ```cpp
 // Línea 181-183
@@ -478,28 +624,30 @@ light->region.crop_roi = cbox;  // Guardar para uso posterior
 ```cpp
 // Línea 185-188
 data_provider_image_option_.do_crop = true;
-data_provider_image_option_.crop_roi = cbox;  // [820, 240, 100, 200]
+data_provider_image_option_.crop_roi = cbox;  // [736, 206, 270, 270]
 data_provider->GetImage(data_provider_image_option_, image_.get());
 ```
 
-Extrae región `[820, 240, 100, 200]` de la imagen completa 1920×1080.
-Ahora tiene una imagen de 100×200 píxeles.
+Extrae región `[736, 206, 270, 270]` de la imagen completa 1920×1080.
+Ahora tiene una imagen de 270×270 píxeles (ya cuadrada).
 
 #### **Paso 5: Resize a 270×270**
 
-**Archivo**: `detection.cc:196-197`
+**Archivo**: `detection.cc:191-197`
 
 ```cpp
 // Línea 191-197
 float resize_scale = 270.0 / min(cbox.width, cbox.height);
-                   = 270.0 / min(100, 200)
-                   = 270.0 / 100
-                   = 2.7
+                   = 270.0 / min(270, 270)
+                   = 270.0 / 270
+                   = 1.0
 
 inference::ResizeGPU(*image_, input_img_blob, ...);
 ```
 
-Redimensiona a 270×270 (tamaño fijo que espera la CNN).
+**En este caso**: Como el crop ya es 270×270, `resize_scale = 1.0` (no hay cambio de tamaño).
+
+**En casos donde projection_roi es pequeño**: Si `max_dim × 2.5 < 270`, el crop será 270×270 mínimo, así que resize_scale siempre será ≥ 1.0.
 
 #### **Paso 6: Inferencia de la CNN (Detector)**
 
@@ -582,11 +730,11 @@ score[3] = horizontal → class_id = 2 (TL_HORIZONTAL_CLASS)
 
 ```cpp
 // Línea 311-312
-float inflate_col = 1 / resize_scale;  // 1 / 2.7 = 0.37
+float inflate_col = 1 / resize_scale;  // 1 / 1.0 = 1.0 (en este ejemplo)
 float inflate_row = 1 / resize_scale;
 
 // Línea 329-334
-// Coordenadas en crop 270×270 → coordenadas en crop original 100×200
+// Coordenadas en crop 270×270 → coordenadas en crop original 270×270
 tmp->region.detection_roi.x = static_cast<int>(x1 * inflate_col);
 tmp->region.detection_roi.y = static_cast<int>(y1 * inflate_row);
 tmp->region.detection_roi.width = static_cast<int>((x2 - x1 + 1) * inflate_col);
@@ -596,24 +744,46 @@ tmp->region.detection_roi.height = static_cast<int>((y2 - y1 + 1) * inflate_row)
 **Ejemplo con Detection A**:
 ```
 En crop 270×270: [45, 60, 70, 180]
-Inflate: [45×0.37, 60×0.37, 70×0.37, 180×0.37] = [16, 22, 25, 66]
-En crop original 100×200: [16, 22, 25, 66]
+Inflate: [45×1.0, 60×1.0, 70×1.0, 180×1.0] = [45, 60, 70, 180]
+En crop original 270×270: [45, 60, 70, 180] (sin cambio en este caso)
 ```
+
+**7c. Validar que esté dentro del crop**
+
+```cpp
+// Línea 337-350
+if (camera::OutOfValidRegion(tmp->region.detection_roi,
+                             crop_box_list.at(img_id).width,   // 270
+                             crop_box_list.at(img_id).height) || // 270
+    tmp->region.detection_roi.Area() <= 0) {
+  AINFO << "Invalid width or height...";
+  continue;  // ← Descarta esta detección
+}
+```
+
+**Verifica** que la bbox detectada esté completamente dentro del crop. Si se sale, se descarta.
+
+**7d. Ajustar bounds y traducir a imagen completa**
 
 ```cpp
 // Línea 352-356
+// Ajustar si la bbox excede ligeramente el crop
+camera::RefineBox(tmp->region.detection_roi,
+                  crop_box_list.at(img_id).width,
+                  crop_box_list.at(img_id).height,
+                  &(tmp->region.detection_roi));
+
 // Traducir del crop a la imagen completa
-camera::RefineBox(...);  // Ajustar bounds si excede crop
-tmp->region.detection_roi.x += crop_box_list.at(img_id).x;  // +820
-tmp->region.detection_roi.y += crop_box_list.at(img_id).y;  // +240
+tmp->region.detection_roi.x += crop_box_list.at(img_id).x;  // +736
+tmp->region.detection_roi.y += crop_box_list.at(img_id).y;  // +206
 ```
 
 **Resultado final**:
 ```
-En imagen original 1920×1080: [16+820, 22+240, 25, 66] = [836, 262, 25, 66]
+En imagen original 1920×1080: [45+736, 60+206, 70, 180] = [781, 266, 70, 180]
 ```
 
-**7c. Agregar al buffer global**
+**7e. Agregar al buffer global**
 
 ```cpp
 // Línea 357-363
@@ -628,19 +798,19 @@ lights->push_back(tmp);
 ```cpp
 detected_bboxes_ = [
   TrafficLight {
-    region.detection_roi: [836, 262, 25, 66],
+    region.detection_roi: [781, 266, 70, 180],
     region.detect_class_id: TL_VERTICAL_CLASS (0),
     region.detect_score: 0.85,
     region.is_detected: true
   },
   TrafficLight {
-    region.detection_roi: [852, 258, 35, 55],
+    region.detection_roi: [816, 256, 65, 170],
     region.detect_class_id: TL_VERTICAL_CLASS (0),
     region.detect_score: 0.92,
     region.is_detected: true
   }
 ]
-// Detection C se descartó (background)
+// Detection C se descartó (background con score 0.95)
 ```
 
 #### **Repetir para todos los semáforos**
@@ -1018,6 +1188,347 @@ munkres_.Maximize(&assignments);
 
 El algoritmo húngaro encuentra la asignación óptima que **maximiza la suma total** de scores, respetando la restricción de **1-to-1** (cada fila se asigna a máximo una columna y viceversa).
 
+---
+
+### 🔍 **Cómo funciona internamente el Hungarian Algorithm**
+
+**Archivo**: `hungarian_optimizer.h:244-721`
+
+El algoritmo Húngaro (también llamado algoritmo de Munkres) resuelve el **problema de asignación óptima** en tiempo O(n³).
+
+#### **Conversión Maximize → Minimize**
+
+Apollo necesita **maximizar** scores, pero el algoritmo Húngaro clásico **minimiza** costos. La conversión es simple:
+
+```cpp
+// hungarian_optimizer.h:248-259
+void HungarianOptimizer<T>::Maximize(
+    std::vector<std::pair<size_t, size_t>>* assignments) {
+  OptimizationInit();
+
+  // Convertir maximización a minimización
+  // Restando cada score del max_score
+  for (size_t row = 0; row < height_; ++row) {
+    for (size_t col = 0; col < width_; ++col) {
+      costs_(row, col) = max_cost_ - costs_(row, col);
+    }
+  }
+
+  Minimize(assignments);  // Ahora minimizar costos invertidos
+}
+```
+
+**Ejemplo numérico**:
+```
+Matriz original (scores a MAXIMIZAR):
+         det0   det1   det2
+hd0    | 0.65 | 0.92 | 0.31 |
+hd1    | 0.11 | 0.08 | 0.74 |
+hd2    | 0.09 | 0.13 | 0.19 |
+
+max_cost = 0.94
+
+Matriz invertida (costos a MINIMIZAR):
+         det0   det1   det2
+hd0    | 0.29 | 0.02 | 0.63 |  (0.94 - scores)
+hd1    | 0.83 | 0.86 | 0.20 |
+hd2    | 0.85 | 0.81 | 0.75 |
+```
+
+Ahora **minimizar** costos invertidos = **maximizar** scores originales.
+
+#### **Los 6 Pasos del Algoritmo Munkres**
+
+El algoritmo ejecuta un estado-máquina con 6 pasos iterativos hasta encontrar la asignación óptima:
+
+```cpp
+// hungarian_optimizer.h:484-495
+void HungarianOptimizer<T>::DoMunkres() {
+  int max_num_iter = 1000;
+  int num_iter = 0;
+  fn_state_ = std::bind(&HungarianOptimizer::ReduceRows, this);
+
+  while (fn_state_ != nullptr && num_iter < max_num_iter) {
+    fn_state_();  // Ejecuta el paso actual
+    ++num_iter;
+  }
+}
+```
+
+---
+
+**PASO 1: ReduceRows** - Restar mínimo de cada fila
+
+```cpp
+// hungarian_optimizer.h:524-535
+void HungarianOptimizer<T>::ReduceRows() {
+  for (size_t row = 0; row < matrix_size_; ++row) {
+    // Encontrar mínimo de la fila
+    T min_cost = costs_(row, 0);
+    for (size_t col = 1; col < matrix_size_; ++col) {
+      min_cost = std::min(min_cost, costs_(row, col));
+    }
+    // Restar mínimo de toda la fila
+    for (size_t col = 0; col < matrix_size_; ++col) {
+      costs_(row, col) -= min_cost;
+    }
+  }
+  fn_state_ = std::bind(&HungarianOptimizer::StarZeroes, this);
+}
+```
+
+**Ejemplo**:
+```
+Matriz invertida:                    Después de ReduceRows:
+         det0   det1   det2                   det0   det1   det2
+hd0    | 0.29 | 0.02 | 0.63 |  min=0.02  →  | 0.27 | 0.00 | 0.61 |
+hd1    | 0.83 | 0.86 | 0.20 |  min=0.20  →  | 0.63 | 0.66 | 0.00 |
+hd2    | 0.85 | 0.81 | 0.75 |  min=0.75  →  | 0.10 | 0.06 | 0.00 |
+```
+
+**Objetivo**: Crear ceros en la matriz (candidatos para asignación).
+
+---
+
+**PASO 2: StarZeroes** - Marcar ceros independientes con ⭐
+
+```cpp
+// hungarian_optimizer.h:542-563
+void HungarianOptimizer<T>::StarZeroes() {
+  for (size_t row = 0; row < matrix_size_; ++row) {
+    if (RowCovered(row)) continue;
+
+    for (size_t col = 0; col < matrix_size_; ++col) {
+      if (ColCovered(col)) continue;
+
+      if (costs_(row, col) == 0) {
+        Star(row, col);      // Marcar con ⭐
+        CoverRow(row);       // Cubrir fila (no buscar más ceros aquí)
+        CoverCol(col);       // Cubrir columna
+        break;
+      }
+    }
+  }
+  ClearCovers();
+  fn_state_ = std::bind(&HungarianOptimizer::CoverStarredZeroes, this);
+}
+```
+
+**Ejemplo**:
+```
+Matriz con ceros:                    Después de StarZeroes:
+         det0   det1   det2                   det0   det1   det2
+hd0    | 0.27 | 0.00 | 0.61 |          →     | 0.27 | 0.00⭐| 0.61 |
+hd1    | 0.63 | 0.66 | 0.00 |          →     | 0.63 | 0.66 | 0.00⭐|
+hd2    | 0.10 | 0.06 | 0.00 |          →     | 0.10 | 0.06 | 0.00 |
+                                              (hd2 no tiene ⭐ porque det2 ya cubierto)
+```
+
+**Objetivo**: Encontrar asignaciones independientes 1-to-1.
+
+---
+
+**PASO 3: CoverStarredZeroes** - Cubrir columnas con ⭐
+
+```cpp
+// hungarian_optimizer.h:570-585
+void HungarianOptimizer<T>::CoverStarredZeroes() {
+  size_t num_covered = 0;
+
+  for (size_t col = 0; col < matrix_size_; ++col) {
+    if (ColContainsStar(col)) {
+      CoverCol(col);
+      num_covered++;
+    }
+  }
+
+  // Si todas las columnas están cubiertas → ¡SOLUCIÓN ENCONTRADA!
+  if (num_covered >= matrix_size_) {
+    fn_state_ = nullptr;  // Terminar
+    return;
+  }
+  fn_state_ = std::bind(&HungarianOptimizer::PrimeZeroes, this);
+}
+```
+
+**Ejemplo**:
+```
+Matriz:                              Columnas cubiertas:
+         det0   det1   det2                   det0   det1✓  det2✓
+hd0    | 0.27 | 0.00⭐| 0.61 |          →     (2 de 3 columnas cubiertas)
+hd1    | 0.63 | 0.66 | 0.00⭐|          →     ⚠️ Falta cubrir det0 → continuar
+hd2    | 0.10 | 0.06 | 0.00 |
+```
+
+**Condición de éxito**: Si todas las columnas están cubiertas, cada fila tiene exactamente una ⭐ → asignación óptima completa.
+
+---
+
+**PASO 4: PrimeZeroes** - Buscar ceros no cubiertos y marcar con '
+
+```cpp
+// hungarian_optimizer.h:593-623
+void HungarianOptimizer<T>::PrimeZeroes() {
+  for (;;) {
+    size_t zero_row, zero_col;
+    if (!FindZero(&zero_row, &zero_col)) {
+      // No hay ceros descubiertos → ir a Paso 6
+      fn_state_ = std::bind(&HungarianOptimizer::AugmentPath, this);
+      return;
+    }
+
+    Prime(zero_row, zero_col);  // Marcar con '
+    int star_col = FindStarInRow(zero_row);
+
+    if (star_col != kHungarianOptimizerColNotFound) {
+      // Hay ⭐ en la misma fila → cubrir fila, descubrir columna
+      CoverRow(zero_row);
+      UncoverCol(star_col);
+    } else {
+      // No hay ⭐ en la fila → encontramos un "augmenting path"
+      assignments_[0] = std::make_pair(zero_row, zero_col);
+      fn_state_ = std::bind(&HungarianOptimizer::MakeAugmentingPath, this);
+      return;
+    }
+  }
+}
+```
+
+**Ejemplo**:
+```
+Matriz (columnas det1, det2 cubiertas):
+         det0   det1✓  det2✓
+hd0    | 0.27 | 0.00⭐| 0.61 |
+hd1    | 0.63 | 0.66 | 0.00⭐|
+hd2    | 0.10 | 0.06 | 0.00 |
+
+Buscar ceros NO cubiertos:
+- (hd0, det0)? 0.27 ≠ 0 → no
+- (hd1, det0)? 0.63 ≠ 0 → no
+- (hd2, det0)? 0.10 ≠ 0 → no
+
+No hay ceros descubiertos → ir a Paso 6 (AugmentPath)
+```
+
+---
+
+**PASO 5: MakeAugmentingPath** - Alternar ' y ⭐ para mejorar asignación
+
+```cpp
+// hungarian_optimizer.h:635-696
+void HungarianOptimizer<T>::MakeAugmentingPath() {
+  bool done = false;
+  size_t count = 0;
+
+  while (!done) {
+    // Buscar ⭐ en la columna del ' actual
+    int row = FindStarInCol(assignments_[count].second);
+
+    if (row != kHungarianOptimizerRowNotFound) {
+      count++;
+      assignments_[count].first = row;
+      assignments_[count].second = assignments_[count - 1].second;
+    } else {
+      done = true;  // No hay ⭐ → terminar path
+    }
+
+    if (!done) {
+      // Buscar ' en la fila de la ⭐
+      int col = FindPrimeInRow(assignments_[count].first);
+      count++;
+      assignments_[count].first = assignments_[count - 1].first;
+      assignments_[count].second = col;
+    }
+  }
+
+  // Alternar: ⭐ → sin marca, ' → ⭐
+  for (size_t i = 0; i <= count; ++i) {
+    size_t row = assignments_[i].first;
+    size_t col = assignments_[i].second;
+
+    if (IsStarred(row, col)) {
+      Unstar(row, col);
+    } else {
+      Star(row, col);
+    }
+  }
+
+  ClearCovers();
+  ClearPrimes();
+  fn_state_ = std::bind(&HungarianOptimizer::CoverStarredZeroes, this);
+}
+```
+
+**Objetivo**: Incrementar el número de asignaciones ⭐ intercambiando ' y ⭐ a lo largo de un camino alternante.
+
+---
+
+**PASO 6: AugmentPath** - Crear más ceros ajustando la matriz
+
+```cpp
+// hungarian_optimizer.h:703-721
+void HungarianOptimizer<T>::AugmentPath() {
+  T minval = FindSmallestUncovered();
+
+  // Sumar mínimo a filas CUBIERTAS
+  for (size_t row = 0; row < matrix_size_; ++row) {
+    if (RowCovered(row)) {
+      for (size_t c = 0; c < matrix_size_; ++c) {
+        costs_(row, c) += minval;
+      }
+    }
+  }
+
+  // Restar mínimo de columnas DESCUBIERTAS
+  for (size_t col = 0; col < matrix_size_; ++col) {
+    if (!ColCovered(col)) {
+      for (size_t r = 0; r < matrix_size_; ++r) {
+        costs_(r, col) -= minval;
+      }
+    }
+  }
+
+  fn_state_ = std::bind(&HungarianOptimizer::PrimeZeroes, this);
+}
+```
+
+**Ejemplo**:
+```
+Matriz (antes):                      Matriz (después):
+         det0   det1✓  det2✓               det0   det1✓  det2✓
+hd0    | 0.27 | 0.00⭐| 0.61 |        →    | 0.17 | 0.00⭐| 0.61 |
+hd1    | 0.63 | 0.66 | 0.00⭐|        →    | 0.53 | 0.66 | 0.00⭐|
+hd2    | 0.10 | 0.06 | 0.00 |        →    | 0.00 | 0.06 | 0.00 |
+
+minval = 0.10 (mínimo en det0 descubierta)
+Restar 0.10 de det0 → crea nuevo cero en (hd2, det0)
+```
+
+**Objetivo**: Modificar la matriz para crear nuevos ceros sin cambiar la optimalidad.
+
+---
+
+#### **Extracción de asignaciones finales**
+
+Después de que el algoritmo termina (Paso 3 con todas las columnas cubiertas), extrae las asignaciones:
+
+```cpp
+// hungarian_optimizer.h:329-340
+void HungarianOptimizer<T>::FindAssignments(
+    std::vector<std::pair<size_t, size_t>>* assignments) {
+  assignments->clear();
+
+  for (size_t row = 0; row < height_; ++row) {
+    for (size_t col = 0; col < width_; ++col) {
+      if (IsStarred(row, col)) {
+        assignments->push_back(std::make_pair(row, col));
+        break;  // Solo una ⭐ por fila
+      }
+    }
+  }
+}
+```
+
 **Resultado** (ejemplo):
 ```cpp
 assignments = [
@@ -1027,12 +1538,14 @@ assignments = [
   (hd3 → det6),  // score: 0.94
   (hd4 → det7),  // score: 0.85
   (hd5 → det8),  // score: 0.93
-  (hd6 → det1),  // ← CONFLICTO: det1 ya fue asignado a hd0
+  (hd6 → det0),  // score: 0.88
   (hd7 → det2)   // score: 0.92
 ]
 ```
 
-Nota: El Hungarian puede producir assignments duplicados si la matriz tiene múltiples máximos. El post-procesamiento resuelve esto.
+**Garantía**: El algoritmo Húngaro garantiza que esta asignación maximiza la suma total de scores (0.92 + 0.88 + 0.91 + 0.94 + 0.85 + 0.93 + 0.88 + 0.92 = 7.23) respetando la restricción 1-to-1.
+
+---
 
 #### **Paso 5: Post-procesamiento con flags is_selected**
 
@@ -1221,17 +1734,17 @@ TrafficLight {
 **Archivo**: `recognition.cc:48-76`
 
 ```cpp
-// Línea 51
+// Línea 51-73
 for (base::TrafficLightPtr light : frame->traffic_lights) {
 
-  // Si NO fue detectado en la etapa anterior
+  // CASO 1: NO fue detectado en la etapa anterior
   if (!light->region.is_detected) {
     light->status.color = base::TLColor::TL_UNKNOWN_COLOR;
     light->status.confidence = 0;
     continue;  // Pasar al siguiente
   }
 
-  // Si SÍ fue detectado → clasificar según tipo
+  // CASOS 2-4: SÍ fue detectado → clasificar según tipo
   candidate[0] = light;
 
   if (light->region.detect_class_id == base::TLDetectionClass::TL_QUADRATE_CLASS) {
@@ -1240,9 +1753,14 @@ for (base::TrafficLightPtr light : frame->traffic_lights) {
     classify_vertical_->Perform(frame, &candidate);
   } else if (light->region.detect_class_id == base::TLDetectionClass::TL_HORIZONTAL_CLASS) {
     classify_horizontal_->Perform(frame, &candidate);
+  } else {
+    // ⚠️ ERROR: detect_class_id desconocido
+    return false;  // ← Aborta el procesamiento completo
   }
 }
 ```
+
+**⚠️ Validación importante**: Si un semáforo detectado tiene un `detect_class_id` que **NO** es QUADRATE (2), VERTICAL (0), ni HORIZONTAL (1), el sistema **aborta todo el procesamiento** retornando `false`. Esto es una medida de seguridad ante datos corruptos.
 
 #### **Caso 1: NO detectado**
 
@@ -1258,36 +1776,123 @@ No hace procesamiento, marca como UNKNOWN.
 
 #### **Caso 2: Detectado como VERTICAL**
 
-**Archivo**: `classify.cc` (función `Perform`)
+**Archivo**: `classify.cc:108-171`
+
+**Paso 1: Extraer región detection_roi de la imagen** (línea 124-127)
+
+```cpp
+data_provider_image_option_.crop_roi = light->region.detection_roi;
+data_provider_image_option_.do_crop = true;
+data_provider_image_option_.target_color = base::Color::BGR;
+frame->data_provider->GetImage(data_provider_image_option_, image_.get());
+```
+
+Ejemplo: `detection_roi = [845, 280, 35, 65]` → extrae región de 35×65 píxeles en posición (845, 280).
+
+---
+
+**Paso 2: Resize con normalización en GPU** (línea 132-134)
+
+```cpp
+const float* mean = mean_.get()->cpu_data();  // [mean_r, mean_g, mean_b]
+inference::ResizeGPU(*image_, input_blob_recog,
+                     frame->data_provider->src_width(), 0,
+                     mean[0], mean[1], mean[2], true, scale_);
+```
+
+**Operación interna**:
+1. Resize a `[resize_height_, resize_width_]` (típicamente 64×64)
+2. Normalización: `pixel_normalized = (pixel - mean) × scale`
+3. Transferencia a GPU para inferencia
+
+---
+
+**Paso 3: Inferencia con modelo vertical** (línea 139-141)
+
+```cpp
+rt_net_->Infer();
+```
+
+**Modelo**: `vert.torch` (red neuronal entrenada para semáforos verticales)
+**Output**: `[black_prob, red_prob, yellow_prob, green_prob]`
+
+---
+
+**Paso 4: Convertir probabilidades a color** (línea 146-171)
+
+```cpp
+float* out_put_data = output_blob_recog->mutable_cpu_data();
+Prob2Color(out_put_data, unknown_threshold_, light);
+```
+
+**Función Prob2Color** (línea 151-171):
+
+```cpp
+void ClassifyBySimple::Prob2Color(const float* out_put_data, float threshold,
+                                  base::TrafficLightPtr light) {
+  // Mapping de índices a colores
+  std::vector<base::TLColor> status_map = {
+      base::TLColor::TL_BLACK,    // 0
+      base::TLColor::TL_RED,      // 1
+      base::TLColor::TL_YELLOW,   // 2
+      base::TLColor::TL_GREEN     // 3
+  };
+
+  // Encontrar probabilidad máxima
+  std::vector<float> prob(out_put_data, out_put_data + status_map.size());
+  auto max_prob = std::max_element(prob.begin(), prob.end());
+
+  // ⚠️ VALIDACIÓN CON THRESHOLD
+  int max_color_id = (*max_prob > threshold)
+      ? static_cast<int>(std::distance(prob.begin(), max_prob))
+      : 0;  // ← Si max_prob <= threshold → BLACK (desconocido)
+
+  light->status.color = status_map[max_color_id];
+  light->status.confidence = out_put_data[max_color_id];
+}
+```
+
+**Ejemplo numérico con alta confianza**:
 
 ```
-1. Extraer región detection_roi de la imagen
-   crop_image = image[845:845+35, 280:280+65]  # [y:y+h, x:x+w]
+Output del modelo: [0.02, 0.05, 0.08, 0.95]
+                   [BLACK, RED,  YELLOW, GREEN]
 
-2. Resize al tamaño esperado por el modelo (ej: 64×64)
-   resized = resize(crop_image, (64, 64))
+max_prob = 0.95 (índice 3 = GREEN)
+unknown_threshold = 0.5
 
-3. Pasar por modelo vert.torch
-   scores = classify_vertical_(resized)
-   # Output: [red_score, yellow_score, green_score, black_score]
-   # Ejemplo: [0.05, 0.08, 0.95, 0.02]
-
-4. Tomar máximo
-   max_idx = argmax(scores) = 2  # GREEN
-   max_score = scores[max_idx] = 0.95
-
-5. Asignar resultado
-   light->status.color = base::TLColor::TL_GREEN
-   light->status.confidence = 0.95
+Validación: 0.95 > 0.5? SÍ
+→ max_color_id = 3
+→ light->status.color = TL_GREEN
+→ light->status.confidence = 0.95
 ```
+
+**Ejemplo con baja confianza**:
+
+```
+Output del modelo: [0.30, 0.25, 0.22, 0.23]
+                   [BLACK, RED,  YELLOW, GREEN]
+
+max_prob = 0.30 (índice 0 = BLACK)
+unknown_threshold = 0.5
+
+Validación: 0.30 > 0.5? NO
+→ max_color_id = 0  ← Forzado a BLACK
+→ light->status.color = TL_BLACK
+→ light->status.confidence = 0.30
+```
+
+**⚠️ Importante**: Si **ninguna** probabilidad supera el `unknown_threshold`, el semáforo se marca como **BLACK** (desconocido/apagado), no como UNKNOWN_COLOR. Esto indica que el modelo no está seguro del color.
+
+---
 
 #### **Caso 3: Detectado como HORIZONTAL**
 
-Mismo proceso pero con modelo `hori.torch`
+Mismo proceso pero con modelo `hori.torch` (línea 42-43, 64-65)
 
 #### **Caso 4: Detectado como QUADRATE**
 
-Mismo proceso pero con modelo `quad.torch`
+Mismo proceso pero con modelo `quad.torch` (línea 40-41, 56-57)
 
 **¿Por qué modelos separados?**
 
@@ -1297,6 +1902,32 @@ Los semáforos tienen distribuciones de luces diferentes:
 - **Quadrate**: 4 luces en cuadrado (diferentes patrones)
 
 Cada tipo requiere features visuales distintas → modelos especializados tienen mejor precisión.
+
+---
+
+### 📋 **Configuración de los modelos de reconocimiento**
+
+**Archivo**: `recognition.pb.txt`
+
+| Parámetro | Vertical | Quadrate | Horizontal |
+|-----------|----------|----------|------------|
+| **Resize** | 32 × 96 | 64 × 64 | 96 × 32 |
+| **Mean RGB** | (69.06, 66.58, 66.56) | (69.06, 66.58, 66.56) | (69.06, 66.58, 66.56) |
+| **Scale** | 0.01 | 0.01 | 0.01 |
+| **Threshold** | 0.5 | 0.5 | 0.5 |
+| **Color order** | BGR | BGR | BGR |
+
+**Operación de normalización**:
+```python
+pixel_normalized = (pixel_bgr - [66.56, 66.58, 69.06]) × 0.01
+```
+
+**Observación clave**: Los modelos **vertical** y **horizontal** tienen dimensiones **invertidas**:
+- Vertical: 32 ancho × 96 alto (orientación vertical)
+- Horizontal: 96 ancho × 32 alto (orientación horizontal)
+- Quadrate: 64 × 64 (cuadrado)
+
+Esto permite que cada modelo aprenda features específicas para la orientación de las luces.
 
 ### ¿Qué entrega?
 
@@ -1357,6 +1988,55 @@ TrafficLight {
 
 ## 🔷 ETAPA 5: TRACKING (Semantic Decision)
 
+### ⚠️ NOTA IMPORTANTE SOBRE SEMANTIC_ID
+
+**🔍 HALLAZGO CRÍTICO**: El campo `semantic_id` está **DISEÑADO pero NO IMPLEMENTADO** en Apollo:
+
+```cpp
+// traffic_light_region_proposal_component.cc:335-337
+int cur_semantic = 0;  // ← SIEMPRE hardcoded a 0
+light->semantic = cur_semantic;  // ← Todos los semáforos reciben semantic=0
+```
+
+**Evidencia de que NO se usa**:
+1. ✅ El código de tracking tiene lógica para manejar `semantic > 0` (voting entre grupos)
+2. ✅ La estructura `TrafficLight` tiene el campo `int semantic = 0;`
+3. ❌ **PERO** el HD-Map proto de Signal **NO tiene** campo `semantic_id`:
+   ```protobuf
+   message Signal {
+     optional Id id = 1;
+     optional Polygon boundary = 2;
+     repeated Subsignal subsignal = 3;
+     repeated Id overlap_id = 4;  // ← Existe para conectar con lanes
+     optional Type type = 5;
+     repeated Curve stop_line = 6;
+     repeated SignInfo sign_info = 7;
+     // ❌ NO existe semantic_id
+   }
+   ```
+4. ❌ El código SIEMPRE asigna `semantic = 0` (nunca lee del mapa)
+5. ❌ La documentación oficial de Apollo NO menciona agrupación de semáforos
+
+**Conclusión**: En la práctica, **cada semáforo se trackea de forma individual e independiente**. El mecanismo de voting por grupos está preparado en el código pero nunca se activa porque todos los semáforos tienen `semantic = 0`.
+
+**🎯 Impacto de esta NO-implementación**:
+
+1. **Ventaja perdida de robustez**:
+   - Si 3 semáforos del mismo cruce apuntan al vehículo y 2 se clasifican como GREEN y 1 como BLACK (por oclusión), el sistema DEBERÍA usar mayoría (GREEN)
+   - En la implementación actual, el semáforo con BLACK mantiene BLACK en su tracking individual
+
+2. **Cada semáforo tiene historial independiente**:
+   - Semáforo A puede tener historial: `[GREEN, GREEN, GREEN]`
+   - Semáforo B (mismo cruce) puede tener historial: `[BLACK, GREEN, BLACK]`
+   - No se ayudan mutuamente a estabilizar la detección
+
+3. **El voting multi-cámara sigue funcionando**:
+   - Apollo tiene voting entre múltiples cámaras (6mm, 12mm, 25mm)
+   - Esto SÍ ayuda a la robustez (detectar el mismo semáforo desde distintas perspectivas)
+   - Pero es diferente al voting por semantic groups (semáforos distintos del mismo cruce)
+
+---
+
 ### ¿Qué recibe?
 
 **Lista de `TrafficLight` objects** (M=8 semáforos) con colores actuales:
@@ -1365,7 +2045,7 @@ TrafficLight {
 TrafficLight {
   // ✅ Identidad del HD-Map (PERSISTENTE entre frames)
   id: "signal_12345"
-  semantic: 100  // ← CLAVE para agrupamiento
+  semantic: 0  // ← SIEMPRE 0 (feature no implementada)
 
   // ✅ Estado actual del frame
   status.color: TL_GREEN  // Clasificación actual
@@ -1384,10 +2064,10 @@ TrafficLight {
 ```cpp
 std::vector<SemanticTable> history_semantic_ = [
   SemanticTable {
-    semantic: "Semantic_100",       // Grupo de semantic_id=100
+    semantic: "Semantic_0",         // ⚠️ SIEMPRE "Semantic_0" (todos agrupados)
     color: TL_GREEN,                // Último color acordado
     timestamp: 1234567890.400,      // Último update
-    light_ids: [0, 1, 2],           // Índices en el frame anterior
+    light_ids: [0, 1, 2, 3, 4, 5, 6, 7],  // ← TODOS los semáforos del frame
     blink: false,
     last_bright_timestamp: 1234567890.350,
     last_dark_timestamp: 1234567890.100,
@@ -1395,13 +2075,8 @@ std::vector<SemanticTable> history_semantic_ = [
       hysteretic_color: TL_GREEN,
       hysteretic_count: 0
     }
-  },
-  SemanticTable {
-    semantic: "Semantic_200",
-    color: TL_RED,
-    timestamp: 1234567890.400,
-    ...
   }
+  // ⚠️ En práctica, solo existe UN grupo (semantic_0)
 ]
 ```
 
@@ -1409,10 +2084,23 @@ std::vector<SemanticTable> history_semantic_ = [
 
 Esta etapa mejora la estabilidad temporal usando el historial. Los semáforos no cambian instantáneamente en el mundo real.
 
+### 📋 **Configuración del tracking**
+
+**Archivo**: `semantic.pb.txt`
+
+| Parámetro | Valor | Descripción |
+|-----------|-------|-------------|
+| **revise_time_second** | 1.5s | Ventana temporal: si Δt > 1.5s → resetear historial |
+| **blink_threshold_second** | 0.55s | Tiempo mínimo oscuro para detectar blink |
+| **hysteretic_threshold_count** | 1 | Frames necesarios para salir de BLACK (count > 1 → 2 frames) |
+| **non_blink_threshold_second** | 1.1s | Tiempo máximo entre bright/dark para mantener blink (= 2 × blink_threshold) |
+
+---
+
 **REGLAS CLAVE DEL TRACKING:**
 
-1. **Voting por Semantic Group**: Múltiples semáforos del mismo cruce votan por consenso
-2. **Hysteresis**: Requiere 3 frames consecutivos para salir del estado BLACK
+1. **~~Voting por Semantic Group~~**: ⚠️ **DISEÑADO pero NO USADO** (todos tienen semantic=0, así que votan TODOS los semáforos juntos independientemente de su intersección)
+2. **Hysteresis**: Requiere 2 frames consecutivos para salir del estado BLACK (hysteretic_threshold = 1, condición: count > 1)
 3. **Blink Detection**: Detecta intermitencia verde (flecha verde parpadeante)
 4. **🚨 REGLA DE SECUENCIA TEMPORAL (Traffic Safety Rule)**:
 
@@ -1440,7 +2128,7 @@ Esta etapa mejora la estabilidad temporal usando el historial. Los semáforos no
 
 ---
 
-#### **Paso 1: Agrupar por Semantic ID**
+#### **Paso 1: Agrupar por Semantic ID** ⚠️ (EN PRÁCTICA: UN SOLO GRUPO)
 
 **Archivo**: `semantic_decision.cc:239-280`
 
@@ -1450,15 +2138,17 @@ std::vector<SemanticTable> semantic_table;
 
 for (size_t i = 0; i < lights_ref.size(); i++) {
   base::TrafficLightPtr light = lights_ref.at(i);
-  int cur_semantic = light->semantic;  // ← Del HD-Map (100)
+  int cur_semantic = light->semantic;  // ← ⚠️ SIEMPRE es 0 en la implementación actual
 
   SemanticTable tmp;
   std::stringstream ss;
 
   if (cur_semantic > 0) {
+    // ❌ Esta rama NUNCA se ejecuta (cur_semantic siempre es 0)
     ss << "Semantic_" << cur_semantic;  // "Semantic_100"
   } else {
-    ss << "No_semantic_light_" << light->id;  // Fallback
+    // ✅ SIEMPRE se ejecuta esta rama
+    ss << "No_semantic_light_" << light->id;  // "No_semantic_light_signal_12345"
   }
 
   tmp.semantic = ss.str();
@@ -1472,40 +2162,78 @@ for (size_t i = 0; i < lights_ref.size(); i++) {
                            boost::bind(compare, _1, tmp));
 
   if (iter != semantic_table.end()) {
+    // ❌ NUNCA se ejecuta (cada light->id es único)
     iter->light_ids.push_back(static_cast<int>(i));  // Agregar al grupo
   } else {
+    // ✅ SIEMPRE se ejecuta (cada semáforo crea su propio grupo)
     semantic_table.push_back(tmp);  // Nuevo grupo
   }
 }
 ```
 
-**Ejemplo de agrupamiento** (frame actual):
+**⚠️ Comportamiento REAL vs DISEÑADO**:
 
+**Ejemplo DISEÑADO** (como debería funcionar si semantic_id se implementara):
 ```cpp
 lights_ref = [
   TrafficLight { id:"signal_12345", semantic:100, color:GREEN },  // idx 0
   TrafficLight { id:"signal_12346", semantic:100, color:GREEN },  // idx 1
   TrafficLight { id:"signal_12347", semantic:100, color:BLACK },  // idx 2
   TrafficLight { id:"signal_12348", semantic:200, color:RED },    // idx 3
-  ...
 ]
 
-// Resultado del agrupamiento:
+// Resultado ESPERADO del agrupamiento:
 semantic_table = [
   SemanticTable {
     semantic: "Semantic_100",
-    light_ids: [0, 1, 2],  // Tres semáforos del mismo grupo
+    light_ids: [0, 1, 2],  // Tres semáforos del mismo cruce
     color: ???  // Se calculará por voting
   },
   SemanticTable {
     semantic: "Semantic_200",
-    light_ids: [3],
+    light_ids: [3],  // Semáforo de otro cruce
     color: ???
   }
 ]
 ```
 
-#### **Paso 2: Voting dentro del grupo**
+**Ejemplo REAL** (lo que realmente sucede con semantic=0):
+```cpp
+lights_ref = [
+  TrafficLight { id:"signal_12345", semantic:0, color:GREEN },  // idx 0
+  TrafficLight { id:"signal_12346", semantic:0, color:GREEN },  // idx 1
+  TrafficLight { id:"signal_12347", semantic:0, color:BLACK },  // idx 2
+  TrafficLight { id:"signal_12348", semantic:0, color:RED },    // idx 3
+]
+
+// Resultado REAL del agrupamiento (cada semáforo en su propio "grupo"):
+semantic_table = [
+  SemanticTable {
+    semantic: "No_semantic_light_signal_12345",
+    light_ids: [0],  // ← Solo un semáforo
+    color: GREEN
+  },
+  SemanticTable {
+    semantic: "No_semantic_light_signal_12346",
+    light_ids: [1],  // ← Solo un semáforo
+    color: GREEN
+  },
+  SemanticTable {
+    semantic: "No_semantic_light_signal_12347",
+    light_ids: [2],  // ← Solo un semáforo
+    color: BLACK
+  },
+  SemanticTable {
+    semantic: "No_semantic_light_signal_12348",
+    light_ids: [3],  // ← Solo un semáforo
+    color: RED
+  }
+]
+
+// ⚠️ Cada "grupo" tiene UN SOLO elemento, así que el voting es trivial
+```
+
+#### **Paso 2: Voting dentro del grupo** ⚠️ (EN PRÁCTICA: SIEMPRE 1 VOTO)
 
 **Archivo**: `semantic_decision.cc:96-138` (función `ReviseBySemantic`)
 
@@ -1521,10 +2249,10 @@ for (size_t i = 0; i < semantic_table.light_ids.size(); ++i) {
 }
 ```
 
-**Ejemplo para grupo "Semantic_100"**:
+**Ejemplo DISEÑADO para grupo "Semantic_100"** (si semantic_id funcionara):
 
 ```
-light_ids = [0, 1, 2]
+light_ids = [0, 1, 2]  // ← Tres semáforos agrupados
 
 Semáforo 0: color = GREEN → vote[GREEN]++
 Semáforo 1: color = GREEN → vote[GREEN]++
@@ -1532,10 +2260,28 @@ Semáforo 2: color = BLACK → vote[BLACK]++
 
 Resultado del voting:
 vote[RED] = 0
-vote[GREEN] = 2
+vote[GREEN] = 2  // ← Mayoría clara
 vote[YELLOW] = 0
 vote[BLACK] = 1
 vote[UNKNOWN] = 0
+```
+
+**Ejemplo REAL** (lo que realmente pasa con semantic=0):
+
+```
+light_ids = [0]  // ← ⚠️ Un solo semáforo en el "grupo"
+
+Semáforo 0: color = GREEN → vote[GREEN]++
+
+Resultado del voting (trivial):
+vote[RED] = 0
+vote[GREEN] = 1  // ← Único voto
+vote[YELLOW] = 0
+vote[BLACK] = 0
+vote[UNKNOWN] = 0
+
+// ⚠️ El "voting" siempre retorna el color del único semáforo
+//    No hay corrección por consenso porque no hay grupo
 ```
 
 **Determinar color ganador**:
@@ -1618,6 +2364,45 @@ iter->blink = false
 
 **Archivo**: `semantic_decision.cc:171-213`
 
+**⚙️ FUNCIONES CLAVE PARA CAMBIAR COLORES:**
+
+Antes de ver el switch, es importante entender las dos funciones que modifican los colores:
+
+1. **`ReviseLights(lights, light_ids, dst_color)`** (línea 140-149):
+   ```cpp
+   void ReviseLights(std::vector<base::TrafficLightPtr> *lights,
+                     const std::vector<int> &light_ids,
+                     base::TLColor dst_color) {
+     // SOBRESCRIBE el color de todos los semáforos del grupo
+     for (auto index : light_ids) {
+       lights->at(index)->status.color = dst_color;  // ← Fuerza este color
+     }
+   }
+   ```
+   **Propósito:** Rechazar la detección actual y forzar un color específico (seguridad).
+
+2. **`UpdateHistoryAndLights(cur, lights, history)`** (línea 69-94):
+   ```cpp
+   void UpdateHistoryAndLights(...) {
+     (*history)->time_stamp = cur.time_stamp;
+
+     if ((*history)->color == TL_BLACK) {
+       // Histéresis para BLACK (requiere 2 frames consecutivos)
+       // ...
+     } else {
+       // Acepta el cambio
+       (*history)->color = cur.color;  // ← Actualiza historial al nuevo color
+     }
+   }
+   ```
+   **Propósito:** Aceptar la detección actual y actualizar el historial.
+
+**Diferencia clave:**
+- `ReviseLights()` = **RECHAZAR** detección (sobrescribir con color anterior/forzado)
+- `UpdateHistoryAndLights()` = **ACEPTAR** detección (actualizar historial)
+
+---
+
 ```cpp
 // Línea 171
 if (time_stamp - iter->timestamp < revise_time_s_) {
@@ -1642,16 +2427,40 @@ if (time_stamp - iter->timestamp < revise_time_s_) {
         // Estado anterior: RED
         // Estado detectado: YELLOW ← INVÁLIDO
         // → Mantener RED hasta que veamos GREEN
+
+        // ⚙️ DÓNDE CAMBIA EL COLOR (llamada a ReviseLights):
         ReviseLights(lights, semantic_table.light_ids, iter->color);
+        //                                              └─────┬─────┘
+        //                                              iter->color = RED
+        //
+        // Dentro de ReviseLights():
+        //   for (auto index : light_ids) {  // [0, 1, 2]
+        //     lights->at(index)->status.color = RED;  // ← SOBRESCRIBE a RED
+        //   }
+        //
+        // Resultado: Todos los semáforos del grupo ahora tienen RED,
+        //            ignorando el YELLOW que detectó el clasificador.
+
         iter->time_stamp = time_stamp;
         iter->hystertic_window.hysteretic_count = 0;
 
         ADEBUG << "YELLOW after RED detected - maintaining RED for safety";
+
       } else {
         // Estado anterior: GREEN, BLACK, o UNKNOWN
         // Estado detectado: YELLOW ← VÁLIDO (puede venir después de GREEN)
         // → Aceptar el cambio
+
+        // ⚙️ DÓNDE CAMBIA EL COLOR (llamada a UpdateHistoryAndLights):
         UpdateHistoryAndLights(semantic_table, lights, &iter);
+        //
+        // Dentro de UpdateHistoryAndLights():
+        //   (*history)->color = cur.color;  // cur.color = YELLOW
+        //                                    // → iter->color = YELLOW
+        //
+        // Resultado: iter->color actualizado a YELLOW,
+        //            los semáforos mantienen el YELLOW detectado.
+
         ADEBUG << "YELLOW after " << s_color_strs[iter->color] << " - accepted";
       }
       break;
@@ -1684,8 +2493,8 @@ if (time_stamp - iter->timestamp < revise_time_s_) {
         UpdateHistoryAndLights(semantic_table, lights, &iter);
       } else {
         // Estaba encendido (RED/GREEN/YELLOW) → mantener color anterior
-        // Aplicar hysteresis: esperar 3 frames consecutivos de BLACK
-        // antes de aceptar que se apagó
+        // Aplicar hysteresis: esperar 2 frames consecutivos del nuevo color
+        // antes de aceptar el cambio desde BLACK
         ReviseLights(lights, semantic_table.light_ids, iter->color);
       }
       break;
@@ -1755,7 +2564,7 @@ if (iter->color == base::TLColor::TL_BLACK) {
   }
 
   if (iter->hystertic_window.hysteretic_count > hysteretic_threshold_) {
-    // Después de 3 frames consecutivos → aceptar cambio
+    // Después de 2 frames consecutivos (count > 1) → aceptar cambio
     iter->color = cur.color;
     iter->hystertic_window.hysteretic_count = 0;
   } else {
@@ -2062,6 +2871,240 @@ history_semantic_ = [
 
 ---
 
+## 🔗 **PERSISTENCIA DEL HISTORIAL ENTRE FRAMES**
+
+### ¿Cómo se mantiene el historial de cada semáforo?
+
+**CLAVE**: El historial está relacionado al **`id` del HD-Map** (no al índice del frame).
+
+**Archivo**: `semantic_decision.cc:252-279`
+
+```cpp
+// Línea 252-264: Crear clave de búsqueda para cada semáforo
+for (size_t i = 0; i < lights_ref.size(); i++) {
+  base::TrafficLightPtr light = lights_ref.at(i);
+  int cur_semantic = light->semantic;  // ⚠️ Siempre 0 en implementación actual
+
+  SemanticTable tmp;
+  std::stringstream ss;
+
+  if (cur_semantic > 0) {
+    // ❌ Diseñado (NO usado): agrupar por semantic_id
+    ss << "Semantic_" << cur_semantic;  // "Semantic_100"
+  } else {
+    // ✅ Real: usar ID del HD-Map como clave única
+    ss << "No_semantic_light_" << light->id;
+    //                           └──────┬─────┘
+    //                        ID del HD-Map (persistente)
+    // Ejemplo: "No_semantic_light_signal_12345"
+  }
+
+  tmp.semantic = ss.str();  // ← Esta es la CLAVE de búsqueda
+  tmp.light_ids.push_back(static_cast<int>(i));  // Índice EN ESTE frame
+  tmp.color = light->status.color;
+  tmp.time_stamp = time_stamp;
+}
+```
+
+**Función de búsqueda en historial** (línea 165-169):
+
+```cpp
+std::vector<SemanticTable>::iterator iter =
+    std::find_if(std::begin(history_semantic_), std::end(history_semantic_),
+                 boost::bind(compare, _1, semantic_table));
+
+// compare (línea 35-37):
+bool compare(const SemanticTable &s1, const SemanticTable &s2) {
+  return s1.semantic == s2.semantic;  // Compara el STRING generado arriba
+}
+```
+
+---
+
+### 📊 **Ejemplo: Persistencia frame a frame**
+
+**Frame 1:**
+```cpp
+lights_ref = [
+  TrafficLight { id: "signal_12345", semantic: 0, color: GREEN },  // índice [0]
+  TrafficLight { id: "signal_99999", semantic: 0, color: RED }     // índice [1]
+]
+
+Agrupamiento:
+  semantic_table = [
+    { semantic: "No_semantic_light_signal_12345", light_ids: [0], color: GREEN },
+    { semantic: "No_semantic_light_signal_99999", light_ids: [1], color: RED }
+  ]
+
+Historial creado (primera vez):
+  history_semantic_ = [
+    {
+      semantic: "No_semantic_light_signal_12345",  // ← CLAVE PERSISTENTE
+      color: GREEN,
+      light_ids: [0],  // ← índice en Frame 1
+      timestamp: 1234567890.100,
+      ...
+    },
+    {
+      semantic: "No_semantic_light_signal_99999",
+      color: RED,
+      light_ids: [1],
+      timestamp: 1234567890.100,
+      ...
+    }
+  ]
+```
+
+**Frame 2 (orden diferente, 0.05s después):**
+```cpp
+lights_ref = [
+  TrafficLight { id: "signal_99999", semantic: 0, color: RED },    // ⚠️ ahora índice [0]
+  TrafficLight { id: "signal_12345", semantic: 0, color: GREEN }   // ⚠️ ahora índice [1]
+]
+
+Agrupamiento:
+  semantic_table = [
+    { semantic: "No_semantic_light_signal_99999", light_ids: [0], color: RED },
+    { semantic: "No_semantic_light_signal_12345", light_ids: [1], color: GREEN }
+  ]
+
+Búsqueda en historial:
+  // Para "No_semantic_light_signal_99999":
+  iter = find("No_semantic_light_signal_99999" en history_semantic_)
+  → ✅ Encuentra: history_semantic_[1]
+  → Δt = 0.05s < 1.5s ✓ (ventana temporal válida)
+  → Aplica reglas de tracking usando historial previo
+  → Actualiza: light_ids = [0] (nuevo índice en Frame 2)
+
+  // Para "No_semantic_light_signal_12345":
+  iter = find("No_semantic_light_signal_12345" en history_semantic_)
+  → ✅ Encuentra: history_semantic_[0]
+  → Δt = 0.05s < 1.5s ✓
+  → Aplica reglas de tracking
+  → Actualiza: light_ids = [1] (nuevo índice en Frame 2)
+
+Historial actualizado:
+  history_semantic_ = [
+    {
+      semantic: "No_semantic_light_signal_12345",
+      color: GREEN,
+      light_ids: [1],  // ← ACTUALIZADO al índice del Frame 2
+      timestamp: 1234567890.150,  // ← ACTUALIZADO
+      ...
+    },
+    {
+      semantic: "No_semantic_light_signal_99999",
+      color: RED,
+      light_ids: [0],  // ← ACTUALIZADO
+      timestamp: 1234567890.150,
+      ...
+    }
+  ]
+```
+
+**Frame 3 (signal_12345 no detectado, 0.05s después):**
+```cpp
+lights_ref = [
+  TrafficLight { id: "signal_99999", semantic: 0, color: RED }  // solo este
+]
+
+Agrupamiento:
+  semantic_table = [
+    { semantic: "No_semantic_light_signal_99999", light_ids: [0], color: RED }
+  ]
+
+Búsqueda en historial:
+  // Para "No_semantic_light_signal_99999":
+  → ✅ Encuentra y actualiza
+
+  // ⚠️ "No_semantic_light_signal_12345" NO se busca (no está en lights_ref)
+
+Historial:
+  history_semantic_ = [
+    {
+      semantic: "No_semantic_light_signal_12345",
+      color: GREEN,
+      light_ids: [1],  // ← NO actualizado (mantiene índice del Frame 2)
+      timestamp: 1234567890.150,  // ← NO actualizado
+      ...
+    },
+    {
+      semantic: "No_semantic_light_signal_99999",
+      color: RED,
+      light_ids: [0],
+      timestamp: 1234567890.200,  // ← ACTUALIZADO
+      ...
+    }
+  ]
+  // ⚠️ El historial de signal_12345 queda "congelado" en Frame 2
+```
+
+**Frame 4 (signal_12345 vuelve a aparecer, 2.0s después del Frame 2):**
+```cpp
+lights_ref = [
+  TrafficLight { id: "signal_12345", semantic: 0, color: YELLOW },  // reaparece
+  TrafficLight { id: "signal_99999", semantic: 0, color: RED }
+]
+
+Agrupamiento:
+  semantic_table = [
+    { semantic: "No_semantic_light_signal_12345", light_ids: [0], color: YELLOW },
+    { semantic: "No_semantic_light_signal_99999", light_ids: [1], color: RED }
+  ]
+
+Búsqueda en historial:
+  // Para "No_semantic_light_signal_12345":
+  iter = find("No_semantic_light_signal_12345" en history_semantic_)
+  → ✅ Encuentra: history_semantic_[0]
+  → Δt = 2.0s > 1.5s ❌ (ventana temporal EXPIRADA)
+
+  // 🚨 RESETEO DE HISTORIAL (línea 210-213):
+  iter->timestamp = timestamp_actual;
+  iter->color = cur_color;  // Acepta YELLOW sin validación
+  // ⚠️ NO aplica regla de secuencia temporal
+  // ⚠️ NO aplica hysteresis
+  // Trata como "nuevo comienzo" después de oclusión prolongada
+
+Historial actualizado:
+  history_semantic_ = [
+    {
+      semantic: "No_semantic_light_signal_12345",
+      color: YELLOW,  // ← RESETEADO directamente
+      light_ids: [0],  // ← índice en Frame 4
+      timestamp: 1234567892.150,  // ← ACTUALIZADO
+      ...
+    },
+    ...
+  ]
+```
+
+---
+
+### ✅ **Conclusión: Persistencia del historial**
+
+**El historial se mantiene usando:**
+1. **Clave de búsqueda**: String formado con el `id` del HD-Map
+   - Ejemplo: `"No_semantic_light_signal_12345"`
+   - **Persistente** entre frames (mismo semáforo físico = mismo ID)
+
+2. **Índices flexibles**: `light_ids` se actualiza cada frame
+   - **NO persistente** (cambia según orden de detección)
+
+3. **Ventana temporal**: 1.5 segundos
+   - Si Δt > 1.5s → resetea historial (oclusión prolongada)
+   - Si Δt ≤ 1.5s → aplica reglas de tracking temporal
+
+**Ventajas**:
+- ✅ Tracking robusto ante cambios de orden en `lights_ref`
+- ✅ Mantiene historial aunque el semáforo no se detecte temporalmente
+- ✅ Reseteo automático después de oclusiones prolongadas
+
+**Limitación actual**:
+- ⚠️ Cada semáforo tiene historial **individual** (semantic_id = 0)
+- ⚠️ NO hay corrección por consenso entre semáforos del mismo cruce
+
+---
+
 ## 📤 SALIDA FINAL
 
 Después de las 5 etapas, Apollo tiene una lista de `TrafficLight` objects con toda la información:
@@ -2074,7 +3117,7 @@ TrafficLight #1 (signal_12345) {
   // IDENTIDAD (del HD-Map, PERSISTENTE)
   // ═══════════════════════════════════════════
   id: "signal_12345"              // ID único del semáforo
-  semantic: 100                   // ID de grupo (para voting/tracking)
+  semantic: 0                     // ⚠️ SIEMPRE 0 (semantic_id NO implementado)
 
   // ═══════════════════════════════════════════
   // GEOMETRÍA 3D (del HD-Map)
@@ -2090,7 +3133,7 @@ TrafficLight #1 (signal_12345) {
   // PROYECCIÓN (calculada en preprocesamiento)
   // ═══════════════════════════════════════════
   region.projection_roi: [850, 300, 40, 80]  // Dónde DEBERÍA aparecer
-  region.crop_roi: [820, 240, 100, 200]      // ROI expandida 2.5×
+  region.crop_roi: [736, 206, 270, 270]      // ROI cuadrada (max_dim × 2.5, min 270)
   region.outside_image: false                 // Visible en imagen
 
   // ═══════════════════════════════════════════
@@ -2112,30 +3155,30 @@ TrafficLight #1 (signal_12345) {
 
 TrafficLight #2 (signal_12346) {
   id: "signal_12346"
-  semantic: 100                   // ← Mismo grupo que #1
+  semantic: 0                     // ⚠️ Tracking individual (NO hay voting)
   region.projection_roi: [920, 310, 35, 75]
   region.detection_roi: [918, 312, 33, 72]
   region.detect_class_id: TL_VERTICAL_CLASS (0)
   region.is_detected: true
-  status.color: TL_GREEN          // Mismo que grupo (por voting)
+  status.color: TL_GREEN          // Clasificado individualmente
   status.confidence: 0.88
   status.blink: false
 }
 
 TrafficLight #3 (signal_12347) {
   id: "signal_12347"
-  semantic: 100                   // ← Mismo grupo
+  semantic: 0                     // ⚠️ Tracking individual
   region.projection_roi: [780, 295, 38, 77]
   region.detection_roi: [0, 0, 0, 0]  // NO detectado
   region.is_detected: false
-  status.color: TL_GREEN          // Corregido por voting (era UNKNOWN)
-  status.confidence: 0.0          // Baja confianza
+  status.color: TL_UNKNOWN_COLOR  // ⚠️ NO corregido (sin voting)
+  status.confidence: 0.0          // Sin detección
   status.blink: false
 }
 
 TrafficLight #4 (signal_12348) {
   id: "signal_12348"
-  semantic: 200                   // ← Grupo diferente (peatonal)
+  semantic: 0                     // ⚠️ Todos tienen semantic=0
   region.projection_roi: [650, 450, 30, 50]
   region.detection_roi: [652, 448, 28, 52]
   region.detect_class_id: TL_VERTICAL_CLASS (0)
@@ -2148,7 +3191,7 @@ TrafficLight #4 (signal_12348) {
 
 Esta información se publica al resto del sistema Apollo (módulos de planning, control, etc.) para toma de decisiones.
 
-**Mensaje publicado** (formato protobuf):
+**Mensaje publicado** (formato protobuf - ejemplo conceptual):
 ```protobuf
 TrafficLightDetectionResult {
   header {
@@ -2159,7 +3202,7 @@ TrafficLightDetectionResult {
   traffic_lights: [
     TrafficLight {
       id: "signal_12345"
-      semantic_id: 100
+      // ⚠️ Nota: semantic_id NO existe en el proto real
       bounding_box: { x: 845, y: 280, width: 35, height: 65 }
       color: GREEN
       confidence: 0.95
@@ -2178,42 +3221,46 @@ TrafficLightDetectionResult {
 
 **El HD-Map provee**:
 - `id`: Identificador único de cada semáforo físico
-- `semantic_id`: Identificador de grupo (semáforos relacionados funcionalmente)
+- ⚠️ `semantic_id`: **DISEÑADO pero NO implementado en Apollo** (siempre 0)
 - Coordenadas 3D exactas
 - Información geométrica (contorno, línea de stop, etc.)
 
-**Estos IDs son persistentes**:
-- NO cambian entre frames
-- Permiten tracking robusto
-- Facilitan voting y revisión temporal
+**El ID es persistente**:
+- NO cambia entre frames
+- Permite tracking robusto individual
+- ⚠️ El voting por grupo NO funciona (semantic_id = 0)
 
 **En nuestro sistema** (sin HD-Map):
 - Usamos row index del archivo de projections
 - Los "IDs" pueden cambiar si se reordena el archivo
 - NO tenemos semantic_ids → sin voting por grupo
 
-### 2. Semantic IDs para consistencia grupal
+### 2. ⚠️ Semantic IDs - FEATURE DISEÑADA PERO NO IMPLEMENTADA
 
-**Concepto clave**: Varios semáforos físicos comparten el mismo `semantic_id`
+**🚨 IMPORTANTE**: Esta sección describe cómo **DEBERÍA** funcionar si semantic_id estuviera implementado, pero **NO FUNCIONA** en Apollo actual.
 
-**Ejemplo típico**:
+**Concepto diseñado** (NO funcional): Varios semáforos físicos compartirían el mismo `semantic_id`
+
+**Ejemplo teórico**:
 ```
-Cruce Main St. y 5th Ave:
+Cruce Main St. y 5th Ave (SI estuviera implementado):
   - Semáforo vehicular Norte:  semantic_id = 100
   - Semáforo vehicular Sur:    semantic_id = 100
   - Semáforo vehicular Este:   semantic_id = 100
   - Semáforo peatonal:         semantic_id = 101 (diferente)
 ```
 
-**Ventajas**:
-- **Voting**: Si 2 detectan GREEN y 1 detecta BLACK → todos quedan GREEN
-- **Robustez**: Compensa errores en detecciones individuales
-- **Coherencia**: Los semáforos del mismo cruce cambian coordinadamente
+**Ventajas previstas** (NO disponibles):
+- **Voting**: Si 2 detectan GREEN y 1 detecta BLACK → todos quedarían GREEN
+- **Robustez**: Compensaría errores en detecciones individuales
+- **Coherencia**: Los semáforos del mismo cruce cambiarían coordinadamente
 
-**En nuestro sistema**:
-- NO tenemos semantic_ids
-- Cada semáforo se procesa independientemente
-- Sin voting → más vulnerable a falsos positivos/negativos
+**Realidad en Apollo**:
+- ❌ semantic_id SIEMPRE es 0 (hardcoded)
+- ❌ El HD-Map Signal proto NO tiene campo semantic_id
+- ❌ Cada semáforo tiene tracking individual
+- ❌ NO hay voting por grupo
+- ✅ Solo funciona el tracking temporal individual
 
 ### 3. Multi-detections en la etapa de Detección
 
@@ -2282,14 +3329,15 @@ Caso B:
 → Se elige Caso A (confía más en posición HD-Map)
 ```
 
-### 7. Tracking con historial por semantic_id
+### 7. Tracking con historial individual por semáforo
 
-**Estructura del historial**:
+**Estructura REAL del historial** (usando ID del HD-Map):
 ```cpp
-history_semantic_["Semantic_100"] = {
+history_semantic_["No_semantic_light_signal_12345"] = {
+  semantic: "No_semantic_light_signal_12345",  // Clave: ID del HD-Map
   color: GREEN,
   timestamp: último_update,
-  light_ids: [índices_en_frame_actual],
+  light_ids: [0],  // ⚠️ Solo 1 índice (semáforo individual)
   blink: false,
   last_bright_timestamp: ...,
   last_dark_timestamp: ...,
@@ -2297,16 +3345,16 @@ history_semantic_["Semantic_100"] = {
 }
 ```
 
-**Un grupo = un historial** (NO un historial por semáforo individual)
+**⚠️ Un semáforo = un historial** (NO hay agrupamiento)
 
 **Reglas de transición**:
 - YELLOW después de RED → mantener RED (sospechoso)
-- BLACK → hysteresis de 3 frames (prevenir flickers)
+- BLACK → hysteresis de 2 frames (count > 1)
 - Cambios normales → aceptar con update de timestamp
 
 **Blink detection**:
 - Solo para GREEN
-- Detecta patrón: BRIGHT → DARK(>0.4s) → BRIGHT
+- Detecta patrón: BRIGHT → DARK(>0.55s) → BRIGHT
 - Útil para flechas verdes intermitentes
 
 ---
@@ -2320,7 +3368,7 @@ history_semantic_["Semantic_100"] = {
 | **Detección (NMS)** | N detections | N' detections | N:N' (N'≤N) | `detection.cc:373-422` |
 | **Asignación** | M TrafficLight + N' detections | M TrafficLight (algunos con detection) | M+N':M (1-to-1) | `select.cc:42-129` |
 | **Reconocimiento** | M TrafficLight | M TrafficLight con color | 1:1 | `recognition.cc`<br>`classify.cc` |
-| **Tracking** | M TrafficLight con color | M TrafficLight revisados | 1:1 (con voting por semantic_id) | `semantic_decision.cc` |
+| **Tracking** | M TrafficLight con color | M TrafficLight revisados | 1:1 (tracking individual, NO voting) | `semantic_decision.cc` |
 
 **Ejemplo numérico completo**:
 ```
@@ -2362,13 +3410,14 @@ Frame N (timestamp: 1234567890.456):
    - 1 no detectado → UNKNOWN
 
 6. Tracking:
-   - Agrupar por semantic_id:
-     * semantic_id=100: lights [0,1,2] → voting → GREEN
-     * semantic_id=100: light [3] → sin detection → GREEN (por voting)
-     * semantic_id=200: light [4] → RED
-     * ...
-   - Aplicar revisión temporal
-   - Actualizar historial
+   - ⚠️ Agrupamiento individual (semantic_id = 0 para todos):
+     * light [0] (signal_12345): GREEN → revisar con historial → GREEN
+     * light [1] (signal_12346): GREEN → revisar con historial → GREEN
+     * light [2] (signal_12347): UNKNOWN → revisar con historial → UNKNOWN
+     * light [3] (signal_12348): RED → revisar con historial → RED
+     * ... (cada uno independiente)
+   - Aplicar revisión temporal individual
+   - Actualizar historial por semáforo
 ```
 
 ---
@@ -2418,28 +3467,6 @@ Frame N (timestamp: 1234567890.456):
   - Revisión temporal: líneas 151-237
   - Blink detection: líneas 187-190
   - Hysteresis: líneas 72-93
-
-**Total de código verificado**: ~2,049 líneas de C++
-
----
-
-## 🎯 Diferencias Clave con Nuestro Sistema (Sin HD-Map)
-
-### Apollo Original vs Nuestro Sistema
-
-| Aspecto | Apollo Original | Nuestro Sistema | Impacto |
-|---------|----------------|-----------------|---------|
-| **Fuente de projections** | HD-Map dinámico (query por frame) | Archivo estático (pre-etiquetado) | ⚠️ Sin actualización dinámica |
-| **IDs de semáforos** | `id` del HD-Map (persistente) | Row index del archivo (puede cambiar) | ❌ Sin tracking robusto |
-| **Semantic IDs** | Asignados por HD-Map (grupos) | NO existen | ❌ Sin voting grupal |
-| **Proyección 3D→2D** | Calculada cada frame (pose + calibración) | Pre-calculada (manual) | ⚠️ Menos precisa |
-| **Multi-cámara** | Telephoto + Wide-angle (selección adaptativa) | Single camera | ⚠️ Menor flexibilidad |
-| **Tracking** | Historial por semantic_id (grupos) | Historial por row index (individual) | ❌ Sin coherencia grupal |
-| **Voting** | Por semantic_id (corrige errores) | No existe | ❌ Más vulnerable a errores |
-
-**Fidelidad aproximada**: ~60-70% (si no consideramos HD-Map como parte del sistema TLR)
-
-**Gap crítico único**: Semantic IDs para voting y tracking grupal
 
 ---
 

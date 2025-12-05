@@ -22,5 +22,6 @@ test_swapping_cross_history_transfer_results/
 debug_blinking_results/
 test_doble_chico/
 test_doble_grande/
+map/
 # Claude Code documentation
 CLAUDE.md
