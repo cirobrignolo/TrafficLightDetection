@@ -23,5 +23,8 @@ debug_blinking_results/
 test_doble_chico/
 test_doble_grande/
 map/
+test_nuevo_signal_id/output
+test_nuevo_signal_id/input_frames
+test_nuevo_signal_id/projection_verification
 # Claude Code documentation
 CLAUDE.md

@@ -35,9 +35,9 @@ class Pipeline(nn.Module):
         detections = torch.vstack(detections).reshape(-1, 9)
 
         # APOLLO FIX: Sort by score BEFORE NMS (like Apollo does in detection.cc:381-390)
-        # detections[:, 0] contains detect_score
-        # Apollo sorts ASCENDING and processes from back (highest score first)
-        scores = detections[:, 0]
+        # NOTA: Este detector no tiene detect_score en [:, 0] (siempre es 0)
+        # Usamos el mismo criterio que selector.py: max de [bg, vert, quad, hori]
+        scores = torch.max(detections[:, 5:9], dim=1).values  # Max score de clasificación
         sorted_indices = torch.argsort(scores, descending=True)  # Sort descending (highest first)
         detections_sorted = detections[sorted_indices]
 
@@ -45,6 +45,33 @@ class Pipeline(nn.Module):
         # APOLLO FIX: Use threshold 0.6 like Apollo (detection.h:87: iou_thresh = 0.6)
         idxs = nms(detections_sorted[:, 1:5], 0.6)
         detections = detections_sorted[idxs]
+
+        # Validación de tamaño de detecciones (Apollo-style)
+        # Apollo rechaza detecciones muy grandes (>300px) o muy chicas (<5px)
+        # Esto filtra falsos positivos (edificios rojos, ruido)
+        if len(detections) > 0:
+            MIN_SIZE = 5
+            MAX_SIZE = 300
+            MIN_ASPECT = 0.5
+            MAX_ASPECT = 8.0
+
+            valid_mask = torch.ones(len(detections), dtype=torch.bool, device=detections.device)
+
+            for i, det in enumerate(detections):
+                w = det[3] - det[1]  # xmax - xmin
+                h = det[4] - det[2]  # ymax - ymin
+
+                # Validar tamaño
+                if w < MIN_SIZE or h < MIN_SIZE or w > MAX_SIZE or h > MAX_SIZE:
+                    valid_mask[i] = False
+                    continue
+
+                # Validar aspect ratio (evita detecciones muy elongadas)
+                aspect = h / w if w > 0 else 0
+                if aspect < MIN_ASPECT or aspect > MAX_ASPECT:
+                    valid_mask[i] = False
+
+            detections = detections[valid_mask]
 
         return detections
 
@@ -105,7 +132,7 @@ class Pipeline(nn.Module):
             recognitions      (Tensor n×4),
             assignments       (Tensor m×2),
             invalid_detections(Tensor k×9),
-            revised_states    (dict proj_id → (color, blink))  # si tracker no es None
+            revised_states    (dict signal_id → (color, blink))  # si tracker no es None
         """
         # 1) Early exit si no hay cajas
         if len(boxes) == 0:
@@ -118,12 +145,30 @@ class Pipeline(nn.Module):
         # 2) Detección
         detections = self.detect(img, boxes)
 
+        # 2.1) Filtro de confidence (Apollo-style adaptado)
+        # Este detector no tiene detect_score en [:, 0], usamos max de scores de clasificación
+        # Mismo criterio que selector.py y el ordenamiento en detect()
+        MIN_CONFIDENCE = 0.3
+        if len(detections) > 0:
+            # Calcular score como máximo de [bg, vert, quad, hori]
+            confidence_scores = torch.max(detections[:, 5:9], dim=1).values
+            confidence_mask = confidence_scores >= MIN_CONFIDENCE
+            detections = detections[confidence_mask]
+
         # 3) Filtrado por tipo y asignación
-        tl_types = torch.argmax(detections[:, 5:], dim=1)
-        valid_mask = tl_types != 0
-        valid_detections = detections[valid_mask]
-        invalid_detections = detections[~valid_mask]
-        assignments = select_tls(self.ho, valid_detections, boxes2projections(boxes), img.shape).to(self.device)
+        if len(detections) > 0:
+            tl_types = torch.argmax(detections[:, 5:], dim=1)
+            valid_mask = tl_types != 0
+            valid_detections = detections[valid_mask]
+            invalid_detections = detections[~valid_mask]
+        else:
+            tl_types = torch.empty(0, dtype=torch.long, device=self.device)
+            valid_detections = torch.empty((0, 9), device=self.device)
+            invalid_detections = torch.empty((0, 9), device=self.device)
+
+        # Calcular projections UNA sola vez (reutilizar en selector y tracker)
+        projections = boxes2projections(boxes)
+        assignments = select_tls(self.ho, valid_detections, projections, img.shape).to(self.device)
 
         # 4) Reconocimiento
         # Baidu Apollo only recognize the selected TLs, we recognize all valid detections.
@@ -141,7 +186,9 @@ class Pipeline(nn.Module):
             # convertimos a listas de Python para el tracker
             assigns_list = assignments.cpu().tolist()
             recs_list    = recognitions.cpu().tolist()
-            revised = self.tracker.track(frame_ts, assigns_list, recs_list)
+
+            # NUEVO: Pasar projections para que tracker acceda a signal_id
+            revised = self.tracker.track(frame_ts, assigns_list, recs_list, projections)
 
         return valid_detections, recognitions, assignments, invalid_detections, revised
 
@@ -151,7 +198,9 @@ def load_pipeline(device=None):
     DIR = os.path.dirname(__file__)
     print(f'Loaded the TL pipeline. Device is {device}.')
     means_det = torch.Tensor([102.9801, 115.9465, 122.7717]).to(device)
-    means_rec = torch.Tensor([69.06, 66.58, 66.56]).to(device)
+    # Apollo recognition.pb.txt: mean RGB = (69.06, 66.58, 66.56)
+    # Pero cv2.imread() devuelve BGR, entonces invertimos el orden:
+    means_rec = torch.Tensor([66.56, 66.58, 69.06]).to(device)  # BGR order
 
     with open(f'{DIR}/confs/bbox_reg_param.json', 'r') as f:
         bbox_reg_param = json.load(f)

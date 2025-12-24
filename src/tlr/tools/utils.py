@@ -158,7 +158,7 @@ def nms(boxes, thresh_iou):
     return torch.tensor(keep_inds, dtype=torch.long)
 
 class ProjectionROI:
-    def __init__(self, x, y, w, h):
+    def __init__(self, x, y, w, h, proj_id=None, signal_id=None):
         self.x = x
         self.y = y
         self.w = w
@@ -169,6 +169,10 @@ class ProjectionROI:
         self.yb = y + h - 1
         self.center_x = int((self.xl + self.xr) / 2)
         self.center_y = int((self.yt + self.yb) / 2)
+
+        # IDs for tracking and debugging
+        self.proj_id = proj_id      # Projection box ID in this frame (temporal, auto-generated)
+        self.signal_id = signal_id  # Physical traffic light ID (persistent across frames)
 
 def ResizeGPU(src, dst, means):
     """
@@ -302,12 +306,46 @@ def restore_boxes_to_full_image(image, detections, projections, start_col=1):
     return ret
 
 def box2projection(box):
-    return ProjectionROI(box[0], box[1], box[2] - box[0], box[3] - box[1])
+    """
+    Convert box to ProjectionROI.
+
+    Box formats supported:
+    - [x1, y1, x2, y2, id]           : id is used as signal_id
+    - [x1, y1, x2, y2, id, proj_id]  : explicit proj_id (optional)
+    - [x1, y1, x2, y2, id, proj_id, signal_id] : explicit both IDs
+
+    Note: proj_id will be auto-generated in boxes2projections if not provided
+    """
+    x1, y1, x2, y2 = box[0], box[1], box[2], box[3]
+    w = x2 - x1
+    h = y2 - y1
+
+    # Extract signal_id from box[4] (current ID in .txt files)
+    # This ID represents the physical traffic light and persists across frames
+    signal_id = f"signal_{int(box[4])}" if len(box) > 4 else None
+
+    # proj_id can be provided explicitly (future format) or will be auto-generated
+    proj_id = box[5] if len(box) > 5 else None
+
+    # If both proj_id and signal_id are provided explicitly (len == 7)
+    if len(box) > 6:
+        signal_id = box[6]
+
+    return ProjectionROI(x1, y1, w, h, proj_id=proj_id, signal_id=signal_id)
 
 def boxes2projections(boxes):
+    """
+    Convert list of boxes to ProjectionROI objects.
+    Auto-generates proj_id based on index if not already set.
+    """
     projections = []
-    for box in boxes:
+    for idx, box in enumerate(boxes):
         projection = box2projection(box)
+
+        # Auto-generate proj_id if not provided
+        if projection.proj_id is None:
+            projection.proj_id = f"proj_{idx}"
+
         projections.append(projection)
     return projections
 

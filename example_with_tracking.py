@@ -75,14 +75,26 @@ with open(output_boxes_path, "w") as f:
 
 # 3) Estados revisados (amarillo)
 if revised:
-    for pid, (col, blink) in revised.items():
-        # Encuentro la caja de proyección para poder dibujar
-        for x1, y1, x2, y2, box_id in projection_bboxes:
-            if box_id == pid:
-                text = f"{col}{' *' if blink else ''}"
-                cv2.putText(image_np, text, (x1, y2+15),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
-                break
+    for signal_id, (col, blink) in revised.items():
+        # signal_id es del formato "signal_0", "signal_1", etc.
+        # Extraer el número y buscar la caja correspondiente
+        # El box_id en projection_bboxes es el quinto elemento (índice 4)
+        try:
+            # Extraer número del signal_id (ej: "signal_0" → 0)
+            if signal_id.startswith("signal_"):
+                box_id_num = int(signal_id.split("_")[1])
+            else:
+                continue  # Skip si no es formato esperado
+
+            # Buscar la projection box con ese ID
+            for x1, y1, x2, y2, box_id in projection_bboxes:
+                if box_id == box_id_num:
+                    text = f"{col}{' *' if blink else ''}"
+                    cv2.putText(image_np, text, (x1, y2+15),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
+                    break
+        except (ValueError, IndexError):
+            continue  # Skip si hay error parseando el signal_id
 
 # Guardar resultados
 cv2.imwrite(output_image_path, image_np)

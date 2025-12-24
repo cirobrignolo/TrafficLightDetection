@@ -24,13 +24,46 @@ Estas features tienen impacto significativo en la robustez y precisión del sist
 
 ### 1. Semantic Grouping y Voting
 
-**Estado:** ❌ No implementado
+**Estado:** ❌ No implementado en nuestro sistema | 🚨 **TAMPOCO FUNCIONA EN APOLLO** (diseñado pero no implementado)
 
-**¿Qué hace Apollo?**
+### 🚨 REALIDAD EN APOLLO
 
-Apollo agrupa semáforos que pertenecen al mismo cruce/intersección usando `semantic_id`. Todos los semáforos vehiculares de un mismo cruce comparten el mismo `semantic_id` y **votan** para determinar el estado final.
+**Apollo tiene el código de voting pero NO funciona porque `semantic_id` está hardcodeado a 0 para todos los semáforos.**
 
-**Código Apollo (semantic_decision.cc:151-190):**
+**Evidencia del código real:**
+```cpp
+// traffic_light_region_proposal_component.cc:335
+void GenerateTrafficLights(...) {
+  for (auto signal : signals) {
+    base::TrafficLightPtr light;
+    light.reset(new base::TrafficLight);
+    light->id = signal.id().id();  // ID del HD-Map
+
+    int cur_semantic = 0;  // ← HARDCODED a 0 SIEMPRE
+    light->semantic = cur_semantic;
+  }
+}
+
+// semantic_decision.cc:263
+// Como semantic siempre es 0, NUNCA usa "Semantic_X"
+if (cur_semantic > 0) {
+  ss << "Semantic_" << cur_semantic;  // ❌ NUNCA ejecuta
+} else {
+  ss << "No_semantic_light_" << light->id;  // ✅ SIEMPRE ejecuta
+}
+```
+
+**Resultado:** Cada semáforo se trackea individualmente, **NO hay voting en la práctica**.
+
+---
+
+### 📋 DISEÑO ORIGINAL (No Implementado)
+
+**¿Qué DEBERÍA hacer Apollo?**
+
+Apollo **debería** agrupar semáforos que pertenecen al mismo cruce/intersección usando `semantic_id`. Todos los semáforos vehiculares de un mismo cruce **deberían** compartir el mismo `semantic_id` y **votar** para determinar el estado final.
+
+**Código Apollo (semantic_decision.cc:151-190) - DISEÑO:**
 ```cpp
 // Paso 1: Agrupar detecciones por semantic_id
 std::map<int, std::vector<TrafficLight*>> semantic_groups;
@@ -58,15 +91,15 @@ for (auto& [semantic_id, group] : semantic_groups) {
 }
 ```
 
-**Ejemplo concreto:**
+**Ejemplo concreto (TEÓRICO - no funciona en Apollo real):**
 
 Intersección Main St. y 5th Ave (semantic_id = 100):
 - Semáforo A (id="signal_12345"): GREEN, confidence=0.92
 - Semáforo B (id="signal_12346"): GREEN, confidence=0.88
 - Semáforo C (id="signal_12347"): BLACK, confidence=0.35 ← **oclusión parcial**
 
-**Sin voting:** Reporta C como BLACK (error)
-**Con voting:** Detecta que A y B son GREEN → corrige C a GREEN
+**Sin voting (Apollo REAL):** Reporta C como BLACK (error) ← **Esto es lo que pasa realmente**
+**Con voting (Apollo DISEÑADO):** Detecta que A y B son GREEN → corrige C a GREEN ← **NO funciona**
 
 **¿Qué hace nuestro sistema?**
 
@@ -83,14 +116,16 @@ for proj_id, det_idx in assignments:
 
 Cada projection box se procesa independientemente, sin conocer si hay otras projection boxes del mismo semáforo o cruce.
 
-**Impacto:**
+**Impacto (SI se implementara):**
 
-| Escenario | Con Voting (Apollo) | Sin Voting (Nuestro) |
-|-----------|---------------------|----------------------|
+| Escenario | Con Voting (DISEÑO) | Sin Voting (Apollo REAL + Nuestro) |
+|-----------|---------------------|-----------------------------------|
 | 1 semáforo ocluido en grupo de 3 | ✅ Corregido por mayoría | ❌ Reporta estado incorrecto |
 | 1 semáforo con ruido en clasificación | ✅ Filtrado por consenso | ❌ Pasa el ruido al output |
 | Semáforos duplicados en imagen | ✅ Consistencia forzada | ❌ Pueden dar estados distintos |
 | Dataset con múltiples semáforos por cruce | ✅ Aprovecha redundancia | ❌ No aprovecha información |
+
+⚠️ **Nota:** Apollo real y nuestro sistema tienen el MISMO comportamiento (sin voting).
 
 **Dificultad de implementación:** 🟡 Media
 
@@ -514,10 +549,17 @@ void ReviseColorByHistory(SemanticTable* table, double current_time) {
     }
   }
 
-  // 5. Hysteresis: solo cambiar si hay suficiente evidencia
+  // 5. Hysteresis: requiere 2 frames consecutivos para cambiar
+  // (hysteretic_threshold = 1, condición: count > 1)
   if (winner != table->revised_color) {
-    float ratio = static_cast<float>(max_count) / table->history.size();
-    if (ratio > 0.6) {  // 60% de la ventana debe concordar
+    // Contar frames consecutivos con el nuevo color
+    int consecutive_count = 0;
+    for (auto it = table->history.rbegin();
+         it != table->history.rend() && it->color == winner; ++it) {
+      consecutive_count++;
+    }
+
+    if (consecutive_count > hysteretic_threshold_) {  // > 1 → mínimo 2 frames
       table->revised_color = winner;
     }
   } else {
@@ -693,11 +735,19 @@ def _decide_by_majority(self, history):
     # Mayoría simple
     winner = max(color_counts.items(), key=lambda x: x[1])[0]
 
-    # Hysteresis: requiere 60% para cambiar de estado
-    current_color = history[-1]['color']
+    # Hysteresis: requiere 2 frames consecutivos para cambiar de estado
+    # (hysteretic_threshold = 1, condición: count > 1)
+    current_color = history[-1]['color'] if history else "black"
     if winner != current_color:
-        ratio = color_counts[winner] / len(history)
-        if ratio > 0.6:
+        # Contar frames consecutivos con el nuevo color
+        consecutive_count = 0
+        for entry in reversed(history):
+            if entry['color'] == winner:
+                consecutive_count += 1
+            else:
+                break
+
+        if consecutive_count > 1:  # Mínimo 2 frames consecutivos
             return winner
         else:
             return current_color  # No cambiar todavía
@@ -1112,6 +1162,7 @@ void DebugVisualize(const CameraFrame& frame,
       cv::rectangle(debug_img,
                    light.region.projection_roi,
                    cv::Scalar(0, 255, 0), 2);
+      // ⚠️ Nota: semantic_id siempre es 0 en Apollo real
       cv::putText(debug_img, std::to_string(light.semantic_id),
                  light.region.projection_roi.tl(),
                  cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0));
@@ -1646,7 +1697,7 @@ def preprocess4det(image, projection, proj_id, current_time, means=None):
 | # | Feature | Apollo | Nuestro | Impacto | Dificultad | Tiempo Est. |
 |---|---------|--------|---------|---------|-----------|-------------|
 | **CRÍTICAS** |
-| 1 | Semantic Grouping + Voting | ✅ | ❌ | 🔴 Alto | 🟡 Media | 2-3 horas |
+| 1 | Semantic Grouping + Voting | ❌ NO funciona | ❌ | 🔴 Alto | 🟡 Media | 2-3 horas |
 | 2 | Multi-Camera Selection | ✅ | ❌ | 🔴 Alto | 🔴 Alta | Requiere HW |
 | 3 | Coordinate Validation Completa | ✅ | ⚠️ Parcial | 🔴 Alto | 🟢 Baja | 30 min |
 | 4 | Historial Temporal Completo | ✅ | ⚠️ Básico | 🔴 Alto | 🟡 Media | 1-2 horas |
@@ -1700,12 +1751,13 @@ def preprocess4det(image, projection, proj_id, current_time, means=None):
    - Archivo: `src/tlr/tracking.py`
    - ROI: Alto (tracking mucho más robusto)
 
-6. **Semantic Voting Básico** (2-3 horas)
+6. **Semantic Voting Básico** (2-3 horas) ⚠️ **Apollo tampoco tiene esto**
    - Agregar `semantic_id` al YAML
    - Implementar voting entre projections del mismo grupo
    - Corregir detecciones con baja confianza por consenso
    - Archivos: `src/tlr/tracking.py`, scripts de carga
    - ROI: Alto (aprovecha redundancia espacial)
+   - Nota: Esta feature está diseñada pero NO funciona en Apollo (semantic_id=0)
 
 **Resultado:** Sistema ~60% más robusto ante oclusiones y ruido
 

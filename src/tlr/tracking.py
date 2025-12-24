@@ -6,12 +6,18 @@ from collections import deque
 from typing import Dict, List, Tuple
 
 # ─── Configuración global ──────────────────────────────────────────────────────
-# Estos valores vienen de `semantic.pb.txt`
+# Estos valores vienen de `semantic.pb.txt` y semantic_decision.cc
 # ventana de tiempo (segundos) para considerar la historia al decidir el color.
+# Apollo semantic.pb.txt: revise_time_second: 1.5
 REVISE_TIME_S: float = 1.5
-# si un amarillo dura menos que esto, se considera “blink” y no cambia de estado.
+
+# Umbral de blink (tiempo mínimo "dark" para detectar parpadeo)
+# Apollo semantic.pb.txt: blink_threshold_second: 0.55
 BLINK_THRESHOLD_S: float = 0.55
+
 # cuántas veces consecutivas debe verse un nuevo color antes de aceptarlo.
+# Apollo semantic.pb.txt: hysteretic_threshold_count: 1
+# Condición Apollo: hysteretic_count > threshold (count > 1 → requiere 2 frames)
 HYSTERETIC_THRESHOLD_COUNT: int = 1
 # ────────────────────────────────────────────────────────────────────────────────
 
@@ -53,72 +59,127 @@ class SemanticDecision:
     def update(self,
                frame_ts: float,
                assignments: List[Tuple[int,int]],
-               recognitions: List[List[float]]
-               ) -> Dict[int, Tuple[str,bool]]:
+               recognitions: List[List[float]],
+               projections: List = None
+               ) -> Dict[str, Tuple[str,bool]]:
         """
         :param frame_ts: timestamp del frame actual en segundos
-        :param assignments: lista de tuplas (proj_id, det_idx)
+        :param assignments: lista de tuplas (proj_idx, det_idx)
         :param recognitions: lista de scores [black, red, yellow, green] por det_idx
-        :returns: dict {proj_id: (revised_color, blink_flag)}
+        :param projections: lista de ProjectionROI objects con signal_id
+        :returns: dict {signal_id: (revised_color, blink_flag)}
         """
-        # 1) Construir tablas semánticas por proj_id
-        results: Dict[int, Tuple[str,bool]] = {}
-        for proj_id, det_idx in assignments:
-            # decidir color actual
+        # 1) Construir tablas semánticas por signal_id
+        results: Dict[str, Tuple[str,bool]] = {}
+        for proj_idx, det_idx in assignments:
+            # Obtener signal_id de la projection
+            if projections and proj_idx < len(projections):
+                signal_id = projections[proj_idx].signal_id
+                if signal_id is None:
+                    signal_id = f"unknown_{proj_idx}"
+            else:
+                # Fallback si no se pasan projections (retrocompatibilidad)
+                signal_id = f"proj_{proj_idx}"
+            # decidir color actual (como Apollo en ReviseBySemantic)
             cls = int(max(range(len(recognitions[det_idx])),
                           key=lambda i: recognitions[det_idx][i]))
-            color = ["black","red","yellow","green"][cls]
+            cur_color = ["black","red","yellow","green"][cls]
 
-            # obtener o crear estado histórico
-            if proj_id not in self.history:
-                self.history[proj_id] = SemanticTable(proj_id, frame_ts, color)
-            st = self.history[proj_id]
+            # obtener o crear estado histórico POR SIGNAL_ID
+            # Tracking sigue al semáforo físico, no a la projection box temporal
+            if signal_id not in self.history:
+                self.history[signal_id] = SemanticTable(signal_id, frame_ts, cur_color)
+                st = self.history[signal_id]
+                # Nuevo semáforo → guardar y continuar
+                results[signal_id] = (st.color, st.blink)
+                continue
 
-            # APOLLO'S HYSTERESIS LOGIC: Only when changing FROM black
+            st = self.history[signal_id]
+
+            # Calcular tiempo transcurrido
             dt = frame_ts - st.time_stamp
-            if color == "yellow" and dt < self.blink_threshold_s:
-                # APOLLO'S SAFETY RULE: Yellow blinking → treat as RED for safety
-                st.blink = True
-                # Override color to RED following Apollo's safety principle
-                color = "red"
-            else:
-                st.blink = False
-            
-            # APOLLO'S SEQUENCE SAFETY RULE: "Any yellow after red is reset to red for safety"
-            if color == "yellow" and st.color == "red":
-                color = "red"  # Keep as red until green displays
-                
-            # Apply hysteresis ONLY when changing FROM black (unknown state)
-            if st.color == "black":
-                # Conservative: need evidence to leave unknown state
-                if st.hysteretic_color == color:
-                    st.hysteretic_count += 1
-                else:
-                    st.hysteretic_color = color
-                    st.hysteretic_count = 1
-                
-                # Only change FROM black with sufficient evidence
-                if st.hysteretic_count > self.hysteretic_threshold:
-                    st.color = color
+
+            # APOLLO TEMPORAL WINDOW CHECK (semantic_decision.cc:171-213)
+            if dt <= self.revise_time_s:
+                # DENTRO DE VENTANA TEMPORAL → Aplicar reglas de Apollo
+
+                # APOLLO SWITCH STATEMENT por cur_color (semantic_decision.cc:174-208)
+                if cur_color == "yellow":
+                    # REGLA DE SECUENCIA TEMPORAL (Apollo semantic_decision.cc:176-182)
+                    # "Because of the time sequence, yellow only exists after green and before red.
+                    #  Any yellow after red is reset to red for the sake of safety until green displays."
+                    if st.color == "red":
+                        # YELLOW después de RED → INVÁLIDO, mantener RED
+                        # ReviseLights mantiene iter->color (RED)
+                        # NO cambia st.color
+                        st.time_stamp = frame_ts
+                        st.hysteretic_count = 0
+                        st.blink = False
+                    else:
+                        # YELLOW después de GREEN/BLACK/UNKNOWN → VÁLIDO, aceptar
+                        # UpdateHistoryAndLights actualiza iter->color a YELLOW
+                        st.color = cur_color
+                        st.time_stamp = frame_ts
+                        st.last_dark_time = frame_ts  # Yellow es "dark"
+                        st.hysteretic_count = 0
+                        st.blink = False
+
+                elif cur_color in ("red", "green"):
+                    # CASE RED/GREEN (Apollo semantic_decision.cc:193-200)
+                    # Alta confianza → aceptar cambio
+                    st.color = cur_color
+                    st.time_stamp = frame_ts
                     st.hysteretic_count = 0
+
+                    # BLINK DETECTION (Apollo semantic_decision.cc:195-198)
+                    # Detectar alternancia BRIGHT→DARK→BRIGHT
+                    if (frame_ts - st.last_bright_time > self.blink_threshold_s and
+                        st.last_dark_time > st.last_bright_time):
+                        st.blink = True
+                    else:
+                        st.blink = False
+
+                    # Actualizar timestamp de bright
+                    st.last_bright_time = frame_ts
+
+                elif cur_color == "black":
+                    # CASE BLACK (Apollo semantic_decision.cc:202-208)
+                    # Semáforo "apagado"
+                    st.last_dark_time = frame_ts
+                    st.hysteretic_count = 0  # BLACK resetea histéresis
+
+                    if st.color in ("unknown", "black"):
+                        # Ya estaba apagado/desconocido → aceptar BLACK
+                        st.time_stamp = frame_ts
+                        st.color = cur_color
+                    else:
+                        # Estaba encendido (RED/GREEN/YELLOW) → mantener color anterior
+                        # NO actualizar st.color, NO actualizar st.time_stamp
+                        pass
+                    st.blink = False
+
+                else:  # "unknown" o cualquier otro
+                    # CASE UNKNOWN (Apollo semantic_decision.cc default)
+                    # Baja confianza → mantener color anterior
+                    # NO actualizar st.color, NO actualizar st.time_stamp
+                    st.blink = False
+
             else:
-                # Between known states (red/green/yellow), update immediately
-                st.color = color
+                # VENTANA TEMPORAL EXPIRADA (>1.5s)
+                # Apollo semantic_decision.cc:210-213
+                # Resetear historial y aceptar color actual SIN validación
+                st.time_stamp = frame_ts
+                st.color = cur_color
                 st.hysteretic_count = 0
+                st.blink = False
 
-            # actualizar timestamps
-            st.time_stamp = frame_ts
-            if color in ("red","green"):
-                st.last_bright_time = frame_ts
-            else:
-                st.last_dark_time = frame_ts
+                # Actualizar timestamps según el color
+                if cur_color in ("red", "green"):
+                    st.last_bright_time = frame_ts
+                elif cur_color in ("yellow", "black"):
+                    st.last_dark_time = frame_ts
 
-            # después de revisar por tiempo, si pasa la ventana,
-            # reiniciamos histéresis:
-            if frame_ts - st.time_stamp > self.revise_time_s:
-                st.hysteretic_count = 0
-
-            results[proj_id] = (st.color, st.blink)
+            results[signal_id] = (st.color, st.blink)
 
         return results
 
@@ -136,16 +197,19 @@ class TrafficLightTracker:
     def track(self,
               frame_ts: float,
               assignments: List[Tuple[int,int]],
-              recognitions: List[List[float]]
-              ) -> Dict[int, Tuple[str,bool]]:
+              recognitions: List[List[float]],
+              projections: List = None
+              ) -> Dict[str, Tuple[str,bool]]:
         """
         :param frame_ts: timestamp del frame
-        :param assignments: misma interfaz que SemanticDecision
-        :param recognitions: idem
-        :returns: dict {proj_id: (revised_color, blink_flag)}
+        :param assignments: lista de (proj_idx, det_idx)
+        :param recognitions: lista de scores por detección
+        :param projections: lista de ProjectionROI con signal_id
+        :returns: dict {signal_id: (revised_color, blink_flag)}
         """
         revised = self.semantic.update(frame_ts,
                                        assignments,
-                                       recognitions)
+                                       recognitions,
+                                       projections)
         self.frame_counter += 1
         return revised
