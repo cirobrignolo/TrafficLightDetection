@@ -268,7 +268,7 @@ hdmap_bbox_region.is_detected = refined_bbox_region.is_detected;
 |---------------|--------|----------------|--------|
 | **Skip si no detectado** | `if (!is_detected) { color=UNKNOWN; continue; }` | Solo reconoce `valid_detections` | ✅ CORRECTO |
 | **Modelos separados** | `classify_vertical_`, `classify_horizontal_`, `classify_quadrate_` | `self.classifiers[tl_type-1]` | ✅ CORRECTO |
-| **Resize shapes** | Vert 32×96, Hori 96×32, Quad 64×64 | Cada classifier tiene su `shape` | ✅ CORRECTO |
+| **Resize shapes** | Vert 96×32, Hori 32×96, Quad 64×64 | Cada classifier tiene su `shape` | ✅ CORRECTO |
 | **Normalización** | `(pixel - mean) × 0.01` | `preprocess4rec()` + `× 0.01` | ✅ CORRECTO |
 | **Prob2Color threshold** | `(*max_prob > 0.5) ? max_idx : 0` | `if max_prob > 0.5: color_id = max_idx else: 0` | ✅ CORRECTO |
 | **Status map** | `[BLACK=0, RED=1, YELLOW=2, GREEN=3]` | Mismo orden (pipeline.py:81) | ✅ CORRECTO |
@@ -554,7 +554,7 @@ elif cur_color == "black":
 | **Recognition means** | BGR [66.56, 66.58, 69.06] | BGR [66.56, 66.58, 69.06] | ✅ Idéntico |
 | **Prob2Color threshold** | 0.5 | 0.5 | ✅ Idéntico |
 | **Status map** | [BLACK, RED, YELLOW, GREEN] | [BLACK, RED, YELLOW, GREEN] | ✅ Idéntico |
-| **Blink threshold** | 0.4s | 0.4s | ✅ Idéntico |
+| **Blink threshold** | 0.55s | 0.55s | ✅ Idéntico |
 | **Revise time** | 1.5s | 1.5s | ✅ Idéntico |
 | **Hysteretic count** | 1 (2 frames) | 1 (2 frames) | ✅ Idéntico |
 | **YELLOW after RED** | Mantener RED | Mantener RED | ✅ Idéntico |

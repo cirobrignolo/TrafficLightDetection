@@ -3,7 +3,7 @@ import os
 import math
 
 # Configuración para el video de flecha roja
-video_path = 'input/doble chiquito baja calidad.mp4'  # Ruta relativa al video
+video_path = 'input/campana_semaforo.mp4'  # Ruta relativa al video
 output_dir = 'input_frames/'  # Guardar en esta misma carpeta (reemplazará los frames existentes)
 
 print("🎥 AUTO-EXTRACCIÓN DE FRAMES PARA VIDEO DOBLE CHICO")
@@ -25,11 +25,11 @@ print(f"   FPS: {fps:.2f}")
 print(f"   Total frames: {total_frames}")
 print(f"   Duración: {duration:.2f}s")
 
-# Configurar para extraer ~43 frames (similar a frames_auto_labeled)
-target_fps = fps
-frame_interval = max(1, math.ceil(fps / target_fps))
+# CONFIGURACIÓN PARA PRUEBAS: Extraer 1 de cada 5 frames (reduce cantidad para testing)
+# Para producción: usar frame_interval = 1 (todos los frames)
+frame_interval = 5
 
-print(f"📸 Guardando 1 frame cada {frame_interval} frames para lograr ~{target_fps} fps")
+print(f"📸 Guardando 1 frame cada {frame_interval} frames (modo pruebas)")
 print(f"📈 Frames estimados: ~{total_frames // frame_interval}")
 
 # Limpiar frames existentes
@@ -46,24 +46,19 @@ while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
         break
-    
-    # Parar en frame 360 porque después está todo negro
-    if frame_count >= 360:
-        print(f"🛑 Deteniendo en frame {frame_count} (después está todo negro)")
-        break
 
     if frame_count % frame_interval == 0:
-        # Crop a 480x480 para coincidir con projection boxes de otros tests
-        # Video original: 848x480, queremos 480x480 desde x=150
-        crop_size = 480
-        start_x = 150
-        end_x = start_x + crop_size
-        cropped_frame = frame[0:crop_size, start_x:end_x]  # [y1:y2, x1:x2]
+        # Rotar frame 90 grados a la derecha (para corregir orientación del video)
+        # El video tiene metadata de rotación que OpenCV no respeta automáticamente
+        rotated_frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
 
         filename = f"frame_{saved_count:04d}.jpg"
         path = os.path.join(output_dir, filename)
-        cv2.imwrite(path, cropped_frame)
-        print(f"🖼️  Guardado: {filename} (crop 480x480)")
+        cv2.imwrite(path, rotated_frame)
+
+        # Obtener dimensiones del frame rotado
+        h, w = rotated_frame.shape[:2]
+        print(f"🖼️  Guardado: {filename} (dimensiones: {w}x{h}, rotado 90°)")
         saved_count += 1
 
     # Mostrar progreso cada 30 frames

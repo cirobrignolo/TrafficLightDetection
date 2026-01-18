@@ -43,8 +43,9 @@ with open(bbox_file, 'r') as f:
 
 print(f"📊 Frames con proyecciones: {len(entries)}")
 
-# ─── PROCESAR SOLO LOS PRIMEROS 20 FRAMES ──────────────────────────────────────
-max_frames = 400
+# ─── PROCESAR TODOS LOS FRAMES ─────────────────────────────────────────────────
+# max_frames = 400  # DESACTIVADO - procesar todos los frames
+max_frames = float('inf')  # Sin límite
 frame_count = 0
 
 # ─── LOGS DE RESULTADOS ────────────────────────────────────────────────────────
@@ -202,14 +203,19 @@ for frame_idx, (frame_name, bboxes) in enumerate(entries.items()):
         final_color = pred_color
         blink_status = ""
         is_blinking = False  # Inicializar la variable
+        tracker_modified = False  # Nueva variable para saber si el tracker modificó
+
         if revised_states and signal_id in revised_states:
             revised_color, is_blinking = revised_states[signal_id]
             final_color = revised_color
             blink_status = " (BLINK)" if is_blinking else ""
+            # Verificar si el tracker modificó el color
+            if pred_color != revised_color:
+                tracker_modified = True
 
         final_lines.append(
             f"{frame_name},{det_idx},{x1},{y1},{x2},{y2},"
-            f"{type_names[tl_type]},{pred_color},{final_color},{signal_id},{blink_status.strip()}"
+            f"{type_names[tl_type]},{pred_color},{final_color},{signal_id},{blink_status.strip()},{tracker_modified}"
         )
         
         # Visualizar resultado final con colores apropiados
@@ -230,7 +236,13 @@ for frame_idx, (frame_name, bboxes) in enumerate(entries.items()):
             color = (255, 0, 255)  # Magenta para parpadeo
         
         cv2.rectangle(img_final, (x1, y1), (x2, y2), color, 3)
-        final_text = f"{signal_id} {final_color}{blink_status}"
+
+        # Mostrar cambio si el tracker modificó el color
+        if tracker_modified:
+            final_text = f"{signal_id}: {pred_color}->{final_color}(T){blink_status}"
+        else:
+            final_text = f"{signal_id}: {final_color}{blink_status}"
+
         cv2.putText(img_final, final_text, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
     
     # Agregar título final
@@ -265,7 +277,7 @@ with open(os.path.join(output_dir, '2_recognition_results.csv'), 'w') as f:
 
 # Final con tracking
 with open(os.path.join(output_dir, '3_final_results.csv'), 'w') as f:
-    f.write('frame,det_idx,x1,y1,x2,y2,tl_type,pred_color,final_color,signal_id,blink_status\n')
+    f.write('frame,det_idx,x1,y1,x2,y2,tl_type,pred_color,final_color,signal_id,blink_status,tracker_modified\n')
     for line in final_lines:
         f.write(line + '\n')
 
