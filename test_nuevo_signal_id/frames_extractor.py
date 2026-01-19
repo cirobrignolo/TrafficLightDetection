@@ -3,7 +3,7 @@ import os
 import math
 
 # Configuración para el video de flecha roja
-video_path = 'input/campana_semaforo.mp4'  # Ruta relativa al video
+video_path = 'input/filtro_completo.mp4'  # Ruta relativa al video
 output_dir = 'input_frames/'  # Guardar en esta misma carpeta (reemplazará los frames existentes)
 
 print("🎥 AUTO-EXTRACCIÓN DE FRAMES PARA VIDEO DOBLE CHICO")
@@ -50,15 +50,15 @@ while cap.isOpened():
     if frame_count % frame_interval == 0:
         # Rotar frame 90 grados a la derecha (para corregir orientación del video)
         # El video tiene metadata de rotación que OpenCV no respeta automáticamente
-        rotated_frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+        # rotated_frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
 
         filename = f"frame_{saved_count:04d}.jpg"
         path = os.path.join(output_dir, filename)
-        cv2.imwrite(path, rotated_frame)
+        cv2.imwrite(path, frame)
 
-        # Obtener dimensiones del frame rotado
-        h, w = rotated_frame.shape[:2]
-        print(f"🖼️  Guardado: {filename} (dimensiones: {w}x{h}, rotado 90°)")
+        # Obtener dimensiones del frame
+        h, w = frame.shape[:2]
+        print(f"🖼️  Guardado: {filename} (dimensiones: {w}x{h})")
         saved_count += 1
 
     # Mostrar progreso cada 30 frames
