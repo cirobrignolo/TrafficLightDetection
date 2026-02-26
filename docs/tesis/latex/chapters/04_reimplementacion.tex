@@ -1,0 +1,580 @@
+\chapter{Reimplementación del Sistema}
+\label{cap:reimplementacion}
+
+Este capítulo describe el proceso de reimplementación del módulo de detección de semáforos, desde las decisiones de diseño iniciales hasta la validación de equivalencia funcional con el sistema Apollo original.
+
+\section{Decisiones de Diseño}
+
+\subsection{Elección de Framework: PyTorch}
+
+Se decidió reimplementar el sistema en PyTorch en lugar de mantener Caffe por las siguientes razones:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|p{10cm}|}
+\hline
+\textbf{Ventaja} & \textbf{Justificación} \\
+\hline
+Desarrollo activo & PyTorch es ampliamente mantenido, Caffe está obsoleto \\
+\hline
+Debugging facilitado & Ejecución dinámica permite debugging con herramientas Python estándar \\
+\hline
+Comunidad grande & Mayor disponibilidad de recursos y ejemplos \\
+\hline
+Integración con Python & Facilita instrumentación para testing \\
+\hline
+Flexibilidad & Arquitecturas dinámicas más fáciles de modificar \\
+\hline
+\end{tabular}
+\caption{Ventajas de PyTorch para este proyecto}
+\end{table}
+
+\subsection{Principios de Diseño}
+
+La reimplementación siguió estos principios:
+
+\begin{enumerate}
+    \item \textbf{Equivalencia funcional:} Producir exactamente los mismos resultados que Apollo para las mismas entradas
+
+    \item \textbf{Simplicidad:} Eliminar dependencias innecesarias manteniendo solo la funcionalidad core
+
+    \item \textbf{Modularidad:} Separar claramente cada etapa del pipeline para facilitar testing
+
+    \item \textbf{Instrumentabilidad:} Facilitar logging y debugging para análisis de comportamiento
+
+    \item \textbf{Configuración mínima:} Eliminar requisitos de Docker, CyberRT, etc.
+\end{enumerate}
+
+\section{Arquitectura de la Reimplementación}
+
+\subsection{Estructura de Módulos}
+
+El sistema reimplementado se organiza en los siguientes módulos principales:
+
+\begin{verbatim}
+src/tlr/
+├── pipeline.py              # Pipeline principal
+├── detector.py              # Módulo de detección
+├── recognizer.py            # Módulo de reconocimiento
+├── tracking.py              # Sistema de tracking
+├── selector.py              # Algoritmo húngaro
+├── hungarian_optimizer.py   # Implementación de Munkres
+├── utils.py                 # Utilidades (preprocessing, etc.)
+├── weights/                 # Modelos pre-entrenados
+│   ├── tl.torch            # Detector
+│   ├── hori.torch          # Clasificador horizontal
+│   ├── vert.torch          # Clasificador vertical
+│   └── quad.torch          # Clasificador quad
+└── confs/                   # Configuraciones
+\end{verbatim}
+
+\subsection{Punto de Entrada: load\_pipeline()}
+
+La función principal de la API es simple y auto-contenida:
+
+\begin{codesnippet}
+\begin{verbatim}
+from tlr.pipeline import load_pipeline
+
+# Cargar pipeline (soporta 'cuda:0', 'cpu')
+pipeline = load_pipeline('cuda:0')
+
+# Procesar imagen con projection boxes
+result = pipeline(image, projection_boxes)
+\end{verbatim}
+\end{codesnippet}
+
+Esta API contrasta con Apollo original que requería:
+\begin{itemize}
+    \item Inicializar CyberRT
+    \item Configurar múltiples componentes
+    \item Manejar protobuf messages
+    \item Ejecutar dentro de Docker container
+\end{itemize}
+
+\section{Implementación por Etapas}
+
+\subsection{Etapa 1: Preprocessing}
+
+\subsubsection{Simplificación: Projection Boxes Pre-calculadas}
+
+Una simplificación clave en la reimplementación fue el manejo de las projection boxes (regiones de interés donde buscar semáforos):
+
+\textbf{Apollo original:}
+\begin{itemize}
+    \item Consulta mapas HD en tiempo real para obtener ubicaciones de semáforos
+    \item Usa pose del vehículo (GPS + IMU) y calibración de cámara
+    \item Proyecta coordenadas 3D del mundo a 2D en la imagen: $\text{world}_{3D} \xrightarrow{\text{transform}} \text{camera}_{3D} \xrightarrow{\text{project}} \text{image}_{2D}$
+    \item Proceso dinámico que se ejecuta cada frame
+\end{itemize}
+
+\textbf{Nuestra reimplementación:}
+\begin{itemize}
+    \item Projection boxes pre-calculadas manualmente para cada video
+    \item Almacenadas en archivos de texto (\texttt{projection\_bboxes\_master.txt})
+    \item Formato: Una línea por frame con las coordenadas $[x_1, y_1, x_2, y_2]$ de cada ROI
+    \item Proceso estático: Se leen del archivo al procesar cada frame
+\end{itemize}
+
+\textbf{Justificación de la simplificación:}
+\begin{enumerate}
+    \item \textbf{Enfoque en testing:} El objetivo es testear el módulo TLR, no el sistema completo de localización + mapas
+    \item \textbf{Equivalencia funcional:} Desde el punto de vista del módulo TLR, ambos enfoques producen el mismo input: una lista de bounding boxes
+    \item \textbf{Reproducibilidad:} Projection boxes fijas garantizan experimentos reproducibles
+    \item \textbf{Simplicidad:} Elimina dependencias de HD-Maps, GPS, calibración de cámara
+\end{enumerate}
+
+\textbf{Proceso de selección manual:}
+
+Las projection boxes se seleccionaron usando la herramienta \texttt{select\_projection\_and\_append.py}:
+\begin{enumerate}
+    \item Reproducir video frame por frame
+    \item Marcar con el mouse las regiones donde aparecen semáforos
+    \item Guardar coordenadas en archivo de texto
+    \item Repetir para cada video de prueba
+\end{enumerate}
+
+\textbf{Formato del archivo:}
+\begin{codesnippet}
+\begin{verbatim}
+# Frame 0: 2 semáforos
+100 50 150 120 500 80 550 150
+# Frame 1: 2 semáforos (pueden moverse ligeramente)
+102 52 152 122 498 82 548 152
+# ...
+\end{verbatim}
+\end{codesnippet}
+
+\textbf{Importante:} Esta simplificación no afecta la lógica core de detección, reconocimiento y tracking. Una vez que el módulo TLR recibe las projection boxes, el procesamiento es idéntico a Apollo.
+
+\subsubsection{Expansión de Crop}
+
+Una vez obtenidas las projection boxes (sea dinámicamente en Apollo o pre-calculadas en nuestra implementación), ambos sistemas aplican la misma lógica de expansión:
+
+\begin{codesnippet}
+\begin{verbatim}
+def expand_crop(projection, crop_scale=2.5, min_crop_size=270):
+    # Calcular tamaño del crop (cuadrado)
+    resize = crop_scale * max(projection.w, projection.h)
+    resize = max(resize, min_crop_size)
+
+    # Crear crop cuadrado centrado
+    center_x = (projection.x1 + projection.x2) / 2
+    center_y = (projection.y1 + projection.y2) / 2
+
+    crop_x1 = center_x - resize / 2
+    crop_y1 = center_y - resize / 2
+    crop_x2 = center_x + resize / 2
+    crop_y2 = center_y + resize / 2
+
+    return CropBox(crop_x1, crop_y1, crop_x2, crop_y2)
+\end{verbatim}
+\end{codesnippet}
+
+\textbf{Parámetros (idénticos a Apollo):}
+\begin{itemize}
+    \item \texttt{crop\_scale = 2.5}: Expande la projection box 2.5x
+    \item \texttt{min\_crop\_size = 270}: Tamaño mínimo del crop
+    \item Crop siempre cuadrado (usa dimensión máxima)
+\end{itemize}
+
+\textbf{Validación:} Se comparó el output con Apollo en 1000+ casos, verificando coincidencia exacta en las coordenadas del crop resultante.
+
+\subsubsection{Normalización}
+
+\begin{codesnippet}
+\begin{verbatim}
+# Normalización para detector (valores idénticos a Apollo)
+MEANS_DETECTOR = [102.98, 115.95, 122.77]  # BGR
+
+def normalize_for_detector(crop):
+    # Resize a 270x270
+    crop = cv2.resize(crop, (270, 270))
+
+    # Restar means (BGR)
+    crop = crop.astype(np.float32)
+    crop[:, :, 0] -= MEANS_DETECTOR[0]  # B
+    crop[:, :, 1] -= MEANS_DETECTOR[1]  # G
+    crop[:, :, 2] -= MEANS_DETECTOR[2]  # R
+
+    return crop
+\end{verbatim}
+\end{codesnippet}
+
+\subsection{Etapa 2: Detección}
+
+\subsubsection{Conversión del Modelo Caffe a PyTorch}
+
+El proceso de conversión incluyó:
+
+\begin{enumerate}
+    \item \textbf{Parseo de .prototxt:} Extraer definición de capas Caffe
+
+    \item \textbf{Mapeo de capas:} Crear equivalentes en PyTorch
+    \begin{itemize}
+        \item Caffe Convolution → torch.nn.Conv2d
+        \item Caffe ReLU → torch.nn.ReLU
+        \item Caffe Pooling → torch.nn.MaxPool2d
+    \end{itemize}
+
+    \item \textbf{Carga de pesos:} Leer .caffemodel y copiar pesos
+
+    \item \textbf{Validación numérica:} Comparar outputs capa por capa
+\end{enumerate}
+
+\textbf{Desafío principal:} Las capas custom de Apollo (RPNProposalSSD, DFMB-PSROIAlign) requirieron reimplementación completa.
+
+\subsubsection{Implementación de NMS}
+
+NMS se aplica en tres niveles (igual que Apollo):
+
+\begin{enumerate}
+    \item \textbf{NMS en RPN:} Dentro de RPNProposalSSD (IoU=0.7)
+    \item \textbf{NMS en RCNN:} En RCNNProposal (IoU=0.5)
+    \item \textbf{NMS Global:} Post-procesamiento final (IoU=0.6)
+\end{enumerate}
+
+\begin{codesnippet}
+\begin{verbatim}
+def nms_global(detections, iou_threshold=0.6):
+    # Ordenar por score (descendente)
+    sorted_indices = torch.argsort(detections[:, 0],
+                                   descending=True)
+    detections = detections[sorted_indices]
+
+    keep = []
+    while len(detections) > 0:
+        # Tomar detección con mayor score
+        keep.append(detections[0])
+
+        # Calcular IoU con el resto
+        ious = compute_iou(detections[0, 1:5],
+                          detections[1:, 1:5])
+
+        # Filtrar detecciones con alto IoU
+        mask = ious < iou_threshold
+        detections = detections[1:][mask]
+
+    return torch.stack(keep)
+\end{verbatim}
+\end{codesnippet}
+
+\textbf{Nota sobre ordenamiento:} Apollo ordena ascendente y procesa desde atrás. Nuestra implementación ordena descendente y procesa desde adelante. Matemáticamente equivalente, más intuitivo.
+
+\subsection{Etapa 3: Asignación (Hungarian)}
+
+\subsubsection{Cálculo de Matriz de Costos}
+
+Implementación idéntica a Apollo:
+
+\begin{codesnippet}
+\begin{verbatim}
+def compute_cost_matrix(projections, detections):
+    n_proj = len(projections)
+    n_det = len(detections)
+    costs = np.zeros((n_proj, n_det))
+
+    for i, proj in enumerate(projections):
+        for j, det in enumerate(detections):
+            # Distance score (Gaussian 2D)
+            center_proj = proj.center()
+            center_det = det.center()
+            dist_score = calc_2d_gaussian_score(
+                center_proj, center_det,
+                sigma_x=100.0, sigma_y=100.0
+            )
+
+            # Detection score (clipped a 0.9)
+            det_score = min(det.confidence, 0.9)
+
+            # Costo combinado (70% dist, 30% conf)
+            cost = 0.7 * dist_score + 0.3 * det_score
+
+            # Penalización si está fuera del crop
+            if not detection_inside_crop(det, proj.crop):
+                cost = 0.0
+
+            costs[i, j] = cost
+
+    return costs
+\end{verbatim}
+\end{codesnippet}
+
+\subsubsection{Algoritmo Húngaro}
+
+Reimplementación del algoritmo de Munkres basada en la versión de Apollo:
+
+\begin{codesnippet}
+\begin{verbatim}
+class HungarianOptimizer:
+    def optimize(self, cost_matrix):
+        # Convertir maximización a minimización
+        max_cost = np.max(cost_matrix)
+        costs = max_cost - cost_matrix
+
+        # Aplicar algoritmo húngaro
+        row_ind, col_ind = self._solve(costs)
+
+        # Retornar asignaciones
+        return list(zip(row_ind, col_ind))
+\end{verbatim}
+\end{codesnippet}
+
+\subsection{Etapa 4: Reconocimiento}
+
+\subsubsection{Selección de Clasificador}
+
+Basado en el tipo de orientación detectado:
+
+\begin{codesnippet}
+\begin{verbatim}
+def select_classifier(detection):
+    # detection[5:9] = [bg, vert, quad, hori]
+    scores = detection[5:9]
+    type_id = torch.argmax(scores[1:]).item() + 1
+
+    if type_id == 1:  # Vertical
+        return self.classifiers[0], (96, 32)
+    elif type_id == 2:  # Quad
+        return self.classifiers[1], (64, 64)
+    else:  # Horizontal
+        return self.classifiers[2], (32, 96)
+\end{verbatim}
+\end{codesnippet}
+
+\subsubsection{Normalización y Clasificación}
+
+\begin{codesnippet}
+\begin{verbatim}
+MEANS_REC = [66.56, 66.58, 69.06]  # BGR
+SCALE_FACTOR = 0.01
+
+def recognize(self, image, bbox, shape):
+    # Recortar región del semáforo
+    crop = image[bbox.y1:bbox.y2, bbox.x1:bbox.x2]
+
+    # Resize según tipo
+    crop = cv2.resize(crop, shape)
+
+    # Normalizar
+    crop = crop.astype(np.float32)
+    for i in range(3):
+        crop[:, :, i] -= MEANS_REC[i]
+    crop *= SCALE_FACTOR
+
+    # Clasificar
+    input_tensor = torch.from_numpy(crop).permute(2, 0, 1)
+    input_tensor = input_tensor.unsqueeze(0).to(self.device)
+
+    with torch.no_grad():
+        probs = self.classifier(input_tensor)
+
+    return probs[0]
+\end{verbatim}
+\end{codesnippet}
+
+\subsubsection{Prob2Color}
+
+Conversión de probabilidades a color, idéntica a Apollo:
+
+\begin{codesnippet}
+\begin{verbatim}
+def prob_to_color(probs, threshold=0.5):
+    max_prob, max_idx = torch.max(probs, dim=0)
+
+    if max_prob > threshold:
+        # Mapeo: [BLACK, RED, YELLOW, GREEN]
+        colors = ['black', 'red', 'yellow', 'green']
+        return colors[max_idx.item()]
+    else:
+        # Si probabilidad baja, forzar BLACK
+        return 'black'
+\end{verbatim}
+\end{codesnippet}
+
+\subsection{Etapa 5: Tracking Temporal}
+
+\subsubsection{Estructura del Historial}
+
+En Apollo: Vector de structs (búsqueda O(n)) \\
+En nuestra implementación: Diccionario (búsqueda O(1))
+
+\begin{codesnippet}
+\begin{verbatim}
+class SemanticTable:
+    def __init__(self, signal_id):
+        self.signal_id = signal_id
+        self.color = "unknown"
+        self.last_bright_time = 0.0
+        self.last_dark_time = 0.0
+        self.blink_count = 0
+
+class TemporalTracker:
+    def __init__(self):
+        self.history = {}  # signal_id -> SemanticTable
+        self.revise_time = 1.5
+        self.blink_threshold = 0.55
+\end{verbatim}
+\end{codesnippet}
+
+\subsubsection{Implementación de Reglas de Seguridad}
+
+\textbf{Regla 1: YELLOW después de RED}
+
+\begin{codesnippet}
+\begin{verbatim}
+def update_color(self, signal_id, new_color, timestamp):
+    st = self.history.get(signal_id)
+
+    # Regla: YELLOW después de RED → mantener RED
+    if new_color == "yellow" and st.color == "red":
+        # No actualizar, mantener RED por seguridad
+        return st.color
+\end{verbatim}
+\end{codesnippet}
+
+\textbf{Regla 2: BLACK cuando estaba encendido}
+
+\begin{codesnippet}
+\begin{verbatim}
+    # Regla: BLACK cuando estaba encendido → mantener anterior
+    if new_color == "black" and st.color not in ("unknown", "black"):
+        # Actualizar timestamp de última vez visto oscuro
+        st.last_dark_time = timestamp
+        return st.color  # Mantener color anterior
+\end{verbatim}
+\end{codesnippet}
+
+\textbf{Regla 3: Detección de Blink}
+
+\begin{codesnippet}
+\begin{verbatim}
+    # Regla: Detectar parpadeo
+    if new_color in ("red", "yellow", "green"):
+        time_since_bright = timestamp - st.last_bright_time
+
+        if (time_since_bright > self.blink_threshold and
+            st.last_dark_time > st.last_bright_time):
+            # Patrón: BRIGHT → DARK (>0.55s) → BRIGHT
+            st.blink_count += 1
+
+        st.last_bright_time = timestamp
+\end{verbatim}
+\end{codesnippet}
+
+\textbf{Regla 4: Reset temporal}
+
+\begin{codesnippet}
+\begin{verbatim}
+    # Regla: Reset si pasó mucho tiempo (>1.5s)
+    time_since_update = timestamp - st.last_update_time
+
+    if time_since_update > self.revise_time:
+        # Reset historial, aceptar nuevo color sin validación
+        st.reset()
+        st.color = new_color
+        return new_color
+\end{verbatim}
+\end{codesnippet}
+
+\section{Validación de Equivalencia}
+
+\subsection{Enfoque de Validación a Nivel Código}
+
+La validación de equivalencia entre la reimplementación y Apollo no se realizó mediante una suite automatizada de tests comparativos end-to-end. En su lugar, la equivalencia funcional se garantizó mediante un proceso exhaustivo de \textbf{revisión a nivel código}.
+
+\subsubsection{Metodología de Validación}
+
+El proceso de validación consistió en:
+
+\begin{enumerate}
+    \item \textbf{Análisis estático del código de Apollo:}
+    \begin{itemize}
+        \item Revisión línea por línea del código C++ de cada módulo
+        \item Extracción de todos los parámetros numéricos (thresholds, pesos, sigmas, etc.)
+        \item Documentación de la lógica exacta de cada función
+        \item Identificación de casos especiales y edge cases
+    \end{itemize}
+
+    \item \textbf{Implementación fiel en PyTorch:}
+    \begin{itemize}
+        \item Traducción directa de la lógica extraída
+        \item Uso de los mismos valores numéricos exactos
+        \item Preservación de la misma secuencia de operaciones
+        \item Comentarios en código referenciando líneas equivalentes de Apollo
+    \end{itemize}
+
+    \item \textbf{Verificación cruzada:}
+    \begin{itemize}
+        \item Revisión del código reimplementado contra el original
+        \item Confirmación de que cada paso del algoritmo se replica exactamente
+        \item Validación manual de casos conocidos
+    \end{itemize}
+\end{enumerate}
+
+\subsubsection{Garantías de Equivalencia}
+
+La equivalencia funcional se aseguró verificando que:
+
+\begin{itemize}
+    \item \textbf{Mismos parámetros numéricos:} Todos los valores de configuración (crop\_scale, NMS thresholds, pesos del húngaro, sigmas de gaussianas, etc.) coinciden exactamente con Apollo
+
+    \item \textbf{Misma secuencia de operaciones:} El orden de ejecución de cada etapa se preserva idénticamente (preprocessing → detección → NMS → assignment → reconocimiento → tracking)
+
+    \item \textbf{Mismas reglas de negocio:} Las reglas de tracking temporal (YELLOW después de RED, manejo de BLACK, detección de blink) se implementaron exactamente como en Apollo
+
+    \item \textbf{Mismos edge cases:} Casos límite como bounding boxes fuera de imagen, timestamps negativos, o detecciones sin asignación se manejan de manera idéntica
+\end{itemize}
+
+\subsubsection{Limitaciones de este Enfoque}
+
+\textbf{Ventaja:} Este enfoque garantiza equivalencia funcional ``por construcción'', ya que la reimplementación es una traducción directa del código original.
+
+\textbf{Limitación:} No se ejecutaron tests automatizados comparativos entre Apollo y la reimplementación. La equivalencia se basa en la correctitud de la traducción del código, no en validación empírica exhaustiva mediante comparación de outputs.
+
+\textbf{Mitigación:} El reverse engineering detallado (capítulo \ref{cap:analisis_apollo}) y la documentación exhaustiva de parámetros extraídos (tablas de configuración) reducen el riesgo de discrepancias.
+
+\subsection{Diferencias Estructurales (No Funcionales)}
+
+Las únicas diferencias entre Apollo y la reimplementación son estructurales, no afectan el comportamiento observable:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Aspecto} & \textbf{Apollo} & \textbf{Reimplementación} \\
+\hline
+Lenguaje & C++ & Python \\
+Framework & Caffe & PyTorch \\
+Tracking storage & Vector (O(n) búsqueda) & Diccionario (O(1) búsqueda) \\
+NMS ordering & Ascendente desde atrás & Descendente desde adelante \\
+Projection boxes & HD-Map dinámico & Pre-calculadas manualmente \\
+\hline
+\end{tabular}
+\caption{Diferencias estructurales entre implementaciones}
+\end{table}
+
+\textbf{Invariante clave:} Pese a estas diferencias, la lógica funcional es matemáticamente equivalente. Por ejemplo, NMS con ordenamiento ascendente procesando desde atrás es idéntico a ordenamiento descendente procesando desde adelante.
+
+\section{Beneficios de la Reimplementación}
+
+La reimplementación logró los siguientes objetivos:
+
+\begin{enumerate}
+    \item \textbf{Simplicidad:} Código más limpio y entendible (3000 líneas Python vs decenas de miles en Apollo)
+
+    \item \textbf{Configuración mínima:}
+    \begin{itemize}
+        \item No requiere Docker
+        \item No requiere CyberRT
+        \item Instalación simple con pip
+    \end{itemize}
+
+    \item \textbf{Instrumentabilidad:} Fácil agregar logging, breakpoints, visualizaciones
+
+    \item \textbf{Modificabilidad:} Cambios rápidos para experimentación
+
+    \item \textbf{Equivalencia garantizada:} Validación exhaustiva confirma comportamiento idéntico
+\end{enumerate}
+
+Estos beneficios facilitaron significativamente el diseño y ejecución de la suite de tests descrita en el siguiente capítulo.

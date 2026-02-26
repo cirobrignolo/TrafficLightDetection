@@ -1,0 +1,122 @@
+\chapter{Introducción}
+\label{cap:introduccion}
+
+\section{Motivación}
+
+Los sistemas de conducción autónoma representan uno de los avances tecnológicos más significativos de las últimas décadas. Estos sistemas integran múltiples componentes de percepción, planificación y control que deben operar de manera coordinada para garantizar la seguridad de pasajeros y peatones. Entre los componentes críticos se encuentra la detección y reconocimiento de semáforos, cuyo correcto funcionamiento es esencial para la toma de decisiones del vehículo en intersecciones.
+
+El testing de estos sistemas presenta desafíos únicos. A diferencia del software tradicional, los sistemas de conducción autónoma:
+
+\begin{itemize}
+    \item Integran modelos de machine learning cuyo comportamiento no está completamente especificado de antemano
+    \item Dependen de múltiples sensores y fuentes de datos (cámaras, LiDAR, radar, GPS, mapas HD)
+    \item Deben operar en tiempo real bajo condiciones ambientales variables
+    \item Tienen requisitos de seguridad críticos donde los fallos pueden tener consecuencias graves
+\end{itemize}
+
+La complejidad de estos sistemas dificulta el diseño de tests específicos y controlados. En un sistema monolítico como Apollo \cite{apollo_auto}, con millones de líneas de código y decenas de componentes interconectados, resulta difícil aislar el comportamiento de subsistemas individuales para realizar pruebas exhaustivas.
+
+\subsection{El Problema del Testing en Sistemas Complejos}
+
+Peng et al. \cite{peng2020first} identifican varios desafíos en la integración de modelos de machine learning en sistemas complejos de conducción autónoma:
+
+\begin{enumerate}
+    \item \textbf{Acoplamiento estrecho:} Los componentes están fuertemente integrados, dificultando el testing aislado
+    \item \textbf{Dependencias de hardware:} Muchos componentes requieren configuraciones específicas de hardware (GPUs, sensores)
+    \item \textbf{Complejidad de configuración:} El despliegue del sistema completo requiere configuraciones extensas y específicas
+    \item \textbf{Dificultad para reproducir escenarios:} Los casos de test deben recrear condiciones del mundo real
+\end{enumerate}
+
+Estos desafíos motivan la necesidad de enfoques alternativos para el testing de subsistemas específicos.
+
+\section{Propuesta}
+
+Este trabajo propone una metodología de testing basada en la reimplementación de subsistemas críticos. La idea central es:
+
+\begin{enumerate}
+    \item \textbf{Seleccionar un subsistema crítico} del sistema completo de conducción autónoma
+    \item \textbf{Analizar el código fuente} mediante reverse engineering para extraer las especificaciones funcionales
+    \item \textbf{Reimplementar el subsistema} en un framework moderno y con dependencias mínimas
+    \item \textbf{Validar la equivalencia funcional} entre la reimplementación y el sistema original
+    \item \textbf{Diseñar tests específicos} aprovechando el control total sobre la implementación
+\end{enumerate}
+
+Este enfoque proporciona varias ventajas:
+
+\begin{itemize}
+    \item \textbf{Control total:} Al tener acceso completo al código, podemos instrumentarlo para testing
+    \item \textbf{Configuración simplificada:} La reimplementación puede eliminar dependencias innecesarias
+    \item \textbf{Reproducibilidad:} Los tests pueden ejecutarse de forma determinística
+    \item \textbf{Flexibilidad:} Podemos modificar el sistema para explorar diferentes escenarios
+\end{itemize}
+
+\section{Caso de Estudio: Detección de Semáforos en Apollo}
+
+Como caso de estudio, seleccionamos el módulo de detección de semáforos del sistema Apollo de Baidu. Esta elección se fundamenta en:
+
+\subsection{Criterios de Selección}
+
+\begin{enumerate}
+    \item \textbf{Criticidad:} La detección de semáforos es un componente de seguridad crítico
+
+    \item \textbf{Simplicidad relativa:} A diferencia de otros módulos de percepción, la detección de semáforos:
+    \begin{itemize}
+        \item Solo requiere cámaras (no LiDAR)
+        \item Tiene un espacio de salida limitado (rojo, amarillo, verde, apagado)
+        \item No requiere fusión compleja de sensores
+    \end{itemize}
+
+    \item \textbf{Auto-contenido:} El módulo tiene interfaces bien definidas con el resto del sistema
+
+    \item \textbf{Disponibilidad de código fuente:} Apollo es open source, permitiendo análisis completo
+\end{enumerate}
+
+\subsection{Sistema Apollo}
+
+Apollo es una plataforma de código abierto para vehículos autónomos desarrollada por Baidu \cite{apollo_auto}. El sistema incluye múltiples módulos para percepción, predicción, planificación y control. El módulo de detección de semáforos (Traffic Light Recognition - TLR) es responsable de:
+
+\begin{itemize}
+    \item Detectar la presencia de semáforos en imágenes de cámara
+    \item Reconocer el estado actual del semáforo (rojo, amarillo, verde, apagado)
+    \item Mantener tracking temporal de los semáforos
+    \item Aplicar reglas de seguridad para evitar falsos negativos peligrosos
+\end{itemize}
+
+\section{Contribuciones}
+
+Las principales contribuciones de este trabajo son:
+
+\begin{enumerate}
+    \item \textbf{Metodología de reverse engineering sistemática} para extraer especificaciones de sistemas ML complejos mediante análisis estático y dinámico del código fuente
+
+    \item \textbf{Reimplementación completa} del módulo TLR de Apollo en PyTorch, con validación de equivalencia a nivel código
+
+    \item \textbf{Proceso iterativo de testing y corrección} que incluye:
+    \begin{itemize}
+        \item Identificación de errores de comprensión durante la reimplementación
+        \item Tests exploratorios diseñados a partir del conocimiento interno del sistema
+        \item Descubrimiento de funcionalidades no implementadas en el sistema original
+    \end{itemize}
+
+    \item \textbf{Análisis detallado} de las decisiones de diseño de Apollo y sus implicaciones para testing
+
+    \item \textbf{Documentación exhaustiva} del proceso de evolución del proyecto, incluyendo aproximaciones fallidas y aprendizajes
+\end{enumerate}
+
+\section{Estructura del Trabajo}
+
+Este trabajo se organiza de la siguiente manera:
+
+\begin{itemize}
+    \item \textbf{Capítulo \ref{cap:marco_teorico} - Marco Teórico:} Presenta los conceptos fundamentales de testing de software, reverse engineering, y oracle-based testing, así como las técnicas de deep learning utilizadas en el sistema
+
+    \item \textbf{Capítulo \ref{cap:analisis_apollo} - Análisis del Sistema Apollo:} Describe el proceso de reverse engineering del código de Apollo, extracción de especificaciones, y análisis de la arquitectura original
+
+    \item \textbf{Capítulo \ref{cap:reimplementacion} - Reimplementación:} Explica las decisiones de diseño en la reimplementación, la migración de Caffe a PyTorch, y la validación de equivalencia funcional
+
+    \item \textbf{Capítulo \ref{cap:diseno_tests} - Diseño de Tests:} Detalla la estrategia de testing, incluyendo tests de validación, tests exploratorios, y diseño de casos de test específicos
+
+    \item \textbf{Capítulo \ref{cap:resultados} - Resultados:} Presenta los hallazgos del proceso de testing, debilidades identificadas, y análisis comparativo con el sistema original
+
+    \item \textbf{Capítulo \ref{cap:conclusiones} - Conclusiones:} Resume las lecciones aprendidas, limitaciones del enfoque, y direcciones de trabajo futuro
+\end{itemize}

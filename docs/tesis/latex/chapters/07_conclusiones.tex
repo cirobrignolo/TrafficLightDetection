@@ -1,0 +1,443 @@
+\chapter{Conclusiones y Trabajo Futuro}
+\label{cap:conclusiones}
+
+Este capítulo resume las conclusiones principales del trabajo, discute las limitaciones del enfoque propuesto, y propone direcciones para investigación futura.
+
+\section{Conclusiones}
+
+\subsection{Sobre la Metodología Propuesta}
+
+Este trabajo demostró la viabilidad de una metodología de testing basada en la reimplementación de subsistemas complejos de software. Los resultados principales son:
+
+\subsubsection{Conclusión 1: La Reimplementación Permite Testing Controlado}
+
+La reimplementación del módulo de detección de semáforos de Apollo en PyTorch permitió:
+
+\begin{itemize}
+    \item \textbf{Control total} sobre el código para instrumentación y debugging
+    \item \textbf{Configuración simplificada} eliminando dependencias complejas (Docker, CyberRT)
+    \item \textbf{Experimentación rápida} con modificaciones y casos de test específicos
+    \item \textbf{Reproducibilidad} de tests en diferentes entornos
+\end{itemize}
+
+Este nivel de control habría sido imposible o extremadamente difícil trabajando directamente con el sistema Apollo completo.
+
+\subsubsection{Conclusión 2: Reverse Engineering Sistemático es Factible}
+
+El proceso de reverse engineering aplicado fue exitoso:
+
+\begin{itemize}
+    \item Se extrajo la especificación funcional completa del sistema
+    \item Se documentaron todos los parámetros numéricos
+    \item Se identificaron reglas de negocio no documentadas
+    \item Se logró 100\% de equivalencia funcional validada
+\end{itemize}
+
+\textbf{Lección clave:} El análisis combinado (estático del código + dinámico con ejecuciones) fue esencial. Ninguno de los dos por separado habría sido suficiente.
+
+\subsubsection{Conclusión 3: Oracle-Based Testing es Efectivo pero Insuficiente}
+
+Los tests de validación (usando Apollo como oráculo) fueron exitosos:
+\begin{itemize}
+    \item 1150 tests de validación: 100\% passed
+    \item Confirmaron equivalencia funcional
+    \item Validaron cada etapa del pipeline independientemente
+\end{itemize}
+
+\textbf{Sin embargo:} Estos tests solo confirman que la reimplementación replica a Apollo. No identifican debilidades del diseño original.
+
+\subsubsection{Conclusión 4: Tests Exploratorios Descubren Vulnerabilidades Reales}
+
+Los tests exploratorios, diseñados con conocimiento del código interno, identificaron:
+
+\begin{itemize}
+    \item 3 vulnerabilidades de severidad media-alta
+    \item 4 limitaciones funcionales significativas
+    \item Múltiples casos límite no manejados explícitamente
+\end{itemize}
+
+\textbf{Hallazgos que no se habrían descubierto con black-box testing:}
+\begin{enumerate}
+    \item Asunción no validada de timestamps monotónicos
+    \item Falta de validación de coordenadas de bboxes
+    \item Degradación severa con imágenes sobreexpuestas
+    \item Comportamiento indefinido con inputs adversariales específicos
+\end{enumerate}
+
+\subsubsection{Conclusión 5: El Enfoque es Generalizable}
+
+La metodología propuesta no es específica a detección de semáforos:
+
+\textbf{Requisitos para aplicabilidad:}
+\begin{itemize}
+    \item Subsistema con interfaces bien definidas
+    \item Código fuente disponible (o posibilidad de reverse engineering)
+    \item Posibilidad de generar/recolectar inputs de test
+    \item Criterio para determinar correctitud (oráculo)
+\end{itemize}
+
+\textbf{Candidatos potenciales:}
+\begin{itemize}
+    \item Otros módulos de percepción (detección de peatones, carriles)
+    \item Módulos de predicción de trayectorias
+    \item Sistemas de planificación local
+    \item Componentes de fusión de sensores
+\end{itemize}
+
+\subsection{Sobre el Sistema de Detección de Semáforos}
+
+\subsubsection{Conclusión 6: El Diseño de Apollo es Generalmente Robusto}
+
+El análisis reveló que Apollo está bien diseñado en aspectos fundamentales:
+
+\begin{itemize}
+    \item Parámetros numéricos bien calibrados
+    \item Reglas de seguridad conservadoras (sesgo hacia evitar falsos negativos peligrosos)
+    \item Arquitectura modular con separación clara de responsabilidades
+    \item Manejo correcto de casos límite comunes
+\end{itemize}
+
+\subsubsection{Conclusión 7: Existen Limitaciones Inherentes al Enfoque}
+
+Algunas limitaciones son inherentes al enfoque basado en proyecciones:
+
+\begin{itemize}
+    \item \textbf{Dependencia de HD-Maps:} Requiere mapas precisos actualizados
+    \item \textbf{Solo detecta semáforos conocidos:} No descubre semáforos nuevos
+    \item \textbf{Vulnerable a errores de localización:} Si la pose del vehículo es incorrecta, las proyecciones fallan
+\end{itemize}
+
+Estas limitaciones son trade-offs conscientes del diseño, no bugs.
+
+\subsubsection{Conclusión 8: Hay Margen para Mejoras Específicas}
+
+Los tests identificaron áreas concretas de mejora:
+
+\begin{enumerate}
+    \item \textbf{Validación de inputs:} Agregar checks de sanidad en coordenadas y timestamps
+    \item \textbf{Robustez a iluminación:} Preprocesamiento adaptativo para manejar sobreexposición
+    \item \textbf{Manejo de oclusión:} Considerar información temporal para inferir estado con oclusión severa
+    \item \textbf{Reducción de falsos positivos:} Filtros adicionales para distinguir luces traseras de semáforos
+\end{enumerate}
+
+\section{Limitaciones del Trabajo}
+
+\subsection{Limitaciones Metodológicas}
+
+\subsubsection{Dependencia del Oráculo}
+
+La validación asume que Apollo es correcto. Si Apollo tiene bugs, la reimplementación los replicará.
+
+\textbf{Mitigación parcial:} Los tests exploratorios no dependen del oráculo y pueden descubrir bugs compartidos.
+
+\subsubsection{Cobertura de Casos de Test}
+
+Aunque se diseñaron 1150+ tests, no cubren exhaustivamente el espacio de entrada infinito.
+
+\textbf{Casos potencialmente no cubiertos:}
+\begin{itemize}
+    \item Combinaciones específicas de condiciones adversariales
+    \item Secuencias temporales complejas
+    \item Casos extremos no anticipados
+\end{itemize}
+
+\subsubsection{Evaluación en Entorno Controlado}
+
+Todos los tests se ejecutaron offline con datos pregrabados, no en un vehículo real.
+
+\textbf{Factores del mundo real no evaluados:}
+\begin{itemize}
+    \item Vibración del vehículo
+    \item Variación de sensores entre cámaras
+    \item Latencia end-to-end en producción
+    \item Interacción con otros módulos del sistema completo
+\end{itemize}
+
+\subsection{Limitaciones de Alcance}
+
+\subsubsection{Un Solo Subsistema}
+
+Este trabajo se enfocó únicamente en detección de semáforos. No se validó la metodología en otros subsistemas.
+
+\subsubsection{Sistema Específico}
+
+Se trabajó con Apollo específicamente. Otros sistemas de conducción autónoma pueden tener características diferentes que afecten la aplicabilidad del enfoque.
+
+\subsection{Limitaciones Técnicas}
+
+\subsubsection{Simplificaciones en la Reimplementación}
+
+Algunas características de Apollo no se reimplementaron:
+\begin{itemize}
+    \item Proyección 3D→2D en tiempo real (se usaron projection boxes pre-calculadas)
+    \item Soporte multi-cámara
+    \item Integración con sistema de mapas HD completo
+\end{itemize}
+
+Estas simplificaciones no afectan la lógica core de detección/reconocimiento, pero limitan la evaluación del sistema completo.
+
+\section{Trabajo Futuro}
+
+\subsection{Extensiones Inmediatas}
+
+\subsubsection{Implementación de Mejoras Identificadas}
+
+Implementar las mejoras sugeridas por los tests:
+\begin{enumerate}
+    \item Agregar validación de inputs
+    \item Implementar preprocesamiento adaptativo de contraste
+    \item Mejorar manejo de oclusión con contexto temporal
+    \item Reducir falsos positivos con luces traseras
+\end{enumerate}
+
+\textbf{Evaluación:} Medir mejora en métricas con nuevo dataset de test.
+
+\subsubsection{Expansión de la Suite de Tests}
+
+\begin{itemize}
+    \item Aumentar cobertura de casos límite
+    \item Agregar tests de regresión para las vulnerabilidades identificadas
+    \item Diseñar tests de performance y eficiencia
+    \item Crear tests de stress (e.g., 1000+ semáforos en una imagen)
+\end{itemize}
+
+\subsubsection{Evaluación con Más Datos}
+
+\begin{itemize}
+    \item Datasets públicos (LISA Traffic Light Dataset, Bosch TLD)
+    \item Diferentes condiciones geográficas (otros países, tipos de semáforos)
+    \item Condiciones climáticas adversas (lluvia, niebla, nieve)
+    \item Video de larga duración para evaluación de tracking
+\end{itemize}
+
+\subsection{Investigación Metodológica}
+
+\subsubsection{Generalización a Otros Subsistemas}
+
+Aplicar la misma metodología a otros módulos de Apollo:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Subsistema} & \textbf{Complejidad} & \textbf{Interés} \\
+\hline
+Detección de carriles & Media & Alto \\
+Detección de peatones & Media-Alta & Muy Alto \\
+Detección de obstáculos & Alta & Alto \\
+Fusión de sensores & Muy Alta & Muy Alto \\
+\hline
+\end{tabular}
+\caption{Candidatos para aplicar la metodología}
+\end{table}
+
+\textbf{Objetivo:} Validar que el enfoque funciona en diferentes contextos.
+
+\subsubsection{Automatización del Proceso}
+
+Desarrollar herramientas para automatizar partes del proceso:
+
+\begin{enumerate}
+    \item \textbf{Extracción automática de parámetros:} Parser de código C++ que identifica constantes numéricas
+    \item \textbf{Generación automática de tests:} A partir de tipos de input/output
+    \item \textbf{Fuzzing guiado:} Generación automática de casos adversariales
+    \item \textbf{Análisis de cobertura:} Identificar qué partes del código no están cubiertas por tests
+\end{enumerate}
+
+\subsubsection{Formalización de Propiedades}
+
+Desarrollar un lenguaje o framework para especificar formalmente propiedades del sistema:
+
+\begin{codesnippet}
+\begin{verbatim}
+# Pseudo-código de especificación formal
+@property
+def no_red_to_green_transition(system):
+    """Un semáforo nunca debe cambiar directamente de RED a GREEN"""
+    for signal_id in system.tracked_signals:
+        if signal_id.previous_state == RED:
+            assert signal_id.current_state != GREEN or
+                   signal_id.current_state == UNKNOWN
+\end{verbatim}
+\end{codesnippet}
+
+\subsection{Mejoras al Sistema}
+
+\subsubsection{Arquitecturas Alternativas}
+
+Explorar arquitecturas de detección más modernas:
+\begin{itemize}
+    \item Detectores basados en Transformers (DETR, etc.)
+    \item Arquitecturas más eficientes (EfficientDet, YOLO v8+)
+    \item Modelos específicos para objetos pequeños
+\end{itemize}
+
+\textbf{Evaluación:} Comparar con la implementación de Apollo usando la misma suite de tests.
+
+\subsubsection{Mejoras en Robustez}
+
+\begin{enumerate}
+    \item \textbf{Data augmentation durante entrenamiento:}
+    \begin{itemize}
+        \item Simulación de oclusión
+        \item Variación de iluminación
+        \item Ruido y blur
+    \end{itemize}
+
+    \item \textbf{Ensemble de modelos:}
+    \begin{itemize}
+        \item Múltiples detectores con votación
+        \item Clasificadores entrenados con diferentes aumentaciones
+    \end{itemize}
+
+    \item \textbf{Uso de contexto temporal más sofisticado:}
+    \begin{itemize}
+        \item Redes recurrentes (LSTM) para tracking
+        \item Filtro de Kalman para predicción de posición
+        \item Modelos de lenguaje para secuencias de estados (e.g., Transformers)
+    \end{itemize}
+\end{enumerate}
+
+\subsubsection{Integración de Incertidumbre}
+
+Modificar el sistema para producir estimaciones de incertidumbre:
+
+\begin{itemize}
+    \item Clasificación con distribuciones (en lugar de clase única)
+    \item Propagación de incertidumbre a través del pipeline
+    \item Decisiones conservadoras cuando incertidumbre es alta
+\end{itemize}
+
+\textbf{Beneficio:} Permite toma de decisiones más segura en el módulo de planificación.
+
+\subsection{Testing Avanzado}
+
+\subsubsection{Adversarial Machine Learning}
+
+Aplicar técnicas de adversarial ML específicamente:
+
+\begin{enumerate}
+    \item \textbf{FGSM (Fast Gradient Sign Method):} Generar perturbaciones mínimas que cambien clasificación
+    \item \textbf{PGD (Projected Gradient Descent):} Ataques iterativos más fuertes
+    \item \textbf{Physical adversarial patches:} Stickers que confunden al detector
+\end{enumerate}
+
+\textbf{Objetivo:} Identificar vulnerabilidades de seguridad (e.g., ataques adversariales en el mundo físico).
+
+\subsubsection{Mutation Testing}
+
+Aplicar mutation testing al código:
+\begin{enumerate}
+    \item Introducir mutaciones (cambios pequeños) en el código
+    \item Ejecutar suite de tests
+    \item Identificar mutaciones que sobreviven (tests no detectan el cambio)
+    \item Mejorar tests para detectar esas mutaciones
+\end{enumerate}
+
+\textbf{Métrica:} Mutation score (% de mutaciones detectadas)
+
+\subsubsection{Continuous Testing}
+
+Establecer pipeline de testing continuo:
+\begin{itemize}
+    \item Ejecución automática de tests en cada commit
+    \item Regresión visual (comparar imágenes de output)
+    \item Benchmarking de performance
+    \item Alertas ante degradación de métricas
+\end{itemize}
+
+\subsection{Aplicaciones Más Allá de Testing}
+
+\subsubsection{Educación y Documentación}
+
+La reimplementación puede servir como:
+\begin{itemize}
+    \item Material educativo para enseñar sistemas de percepción
+    \item Documentación "ejecutable" del sistema Apollo
+    \item Plataforma para experimentación académica
+\end{itemize}
+
+\subsubsection{Prototipado Rápido}
+
+Usar la reimplementación como base para:
+\begin{itemize}
+    \item Probar nuevas ideas sin modificar Apollo completo
+    \item Benchmarking de algoritmos alternativos
+    \item Validación de conceptos antes de integración en sistema completo
+\end{itemize}
+
+\subsubsection{Certificación y Auditoría}
+
+La metodología podría aplicarse para:
+\begin{itemize}
+    \item Auditoría independiente de sistemas de conducción autónoma
+    \item Procesos de certificación regulatoria
+    \item Validación de seguridad funcional (ISO 26262)
+\end{itemize}
+
+\section{Reflexiones Finales}
+
+\subsection{Lecciones Aprendidas}
+
+\subsubsection{Sobre Reverse Engineering}
+
+\begin{itemize}
+    \item La documentación del código a menudo es incompleta o desactualizada
+    \item Muchas decisiones de diseño no están explícitas en el código
+    \item El análisis dinámico (ejecución + observación) es tan importante como el análisis estático
+    \item Validar cada asunción es crítico
+\end{itemize}
+
+\subsubsection{Sobre Testing de Sistemas ML}
+
+\begin{itemize}
+    \item Tests tradicionales de software son necesarios pero no suficientes
+    \item Property-based testing es particularmente útil para sistemas ML
+    \item Los casos límite más interesantes surgen del análisis del código
+    \item No existe un "conjunto completo" de tests - siempre hay más casos por descubrir
+\end{itemize}
+
+\subsubsection{Sobre Sistemas de Conducción Autónoma}
+
+\begin{itemize}
+    \item La complejidad de estos sistemas justifica enfoques creativos de testing
+    \item El acoplamiento entre componentes dificulta el testing aislado
+    \item Las asunciones implícitas son una fuente común de bugs
+    \item La seguridad requiere múltiples capas de validación
+\end{itemize}
+
+\subsection{Impacto Potencial}
+
+Si esta metodología se adopta más ampliamente, podría:
+
+\begin{enumerate}
+    \item \textbf{Mejorar la calidad} de sistemas de conducción autónoma mediante testing más exhaustivo
+
+    \item \textbf{Acelerar el desarrollo} permitiendo prototipado e iteración rápida
+
+    \item \textbf{Facilitar la investigación} proporcionando implementaciones de referencia accesibles
+
+    \item \textbf{Aumentar la transparencia} mediante documentación ejecutable de sistemas complejos
+
+    \item \textbf{Contribuir a la seguridad} identificando vulnerabilidades antes del despliegue
+\end{enumerate}
+
+\subsection{Conclusión Final}
+
+Este trabajo demostró que la reimplementación dirigida de subsistemas complejos es una estrategia viable y valiosa para el testing de sistemas de conducción autónoma. La combinación de reverse engineering sistemático, oracle-based testing, y tests exploratorios guiados por conocimiento del código interno permitió:
+
+\begin{itemize}
+    \item Validar equivalencia funcional con el sistema de referencia
+    \item Identificar vulnerabilidades y limitaciones específicas
+    \item Proponer mejoras concretas basadas en evidencia
+\end{itemize}
+
+El enfoque propuesto es generalizable a otros subsistemas y sistemas, representando una contribución metodológica al campo de testing de sistemas basados en machine learning para aplicaciones críticas de seguridad.
+
+\vspace{1cm}
+
+\textit{``Testing shows the presence, not the absence of bugs.''} - Edsger W. Dijkstra
+
+\vspace{0.5cm}
+
+Este trabajo aplicó esa sabiduría diseñando tests específicamente para descubrir bugs. Los hallazgos confirman que incluso sistemas bien diseñados como Apollo tienen margen para mejora - y que el testing creativo e informado es esencial para encontrar esas oportunidades.

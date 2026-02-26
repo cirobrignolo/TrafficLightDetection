@@ -1,0 +1,626 @@
+\chapter{Testing y Descubrimiento de Errores}
+\label{cap:diseno_tests}
+
+Este capítulo describe el proceso iterativo de testing aplicado durante y después de la reimplementación. A diferencia de un enfoque tradicional de diseño de tests sistemático previo a la implementación, este trabajo siguió un proceso más exploratorio y orgánico donde los tests surgieron naturalmente del proceso de comprensión y corrección del sistema.
+
+\section{Filosofía del Enfoque}
+
+\subsection{Testing como Proceso de Aprendizaje}
+
+El testing en este proyecto no fue un paso final de validación, sino parte integral del proceso de comprensión del sistema:
+
+\begin{enumerate}
+    \item \textbf{Implementación inicial} basada en comprensión parcial del código
+    \item \textbf{Ejecución con inputs reales} para validar comportamiento
+    \item \textbf{Descubrimiento de discrepancias} entre comportamiento esperado y observado
+    \item \textbf{Investigación del código original} para entender la causa
+    \item \textbf{Corrección de la reimplementación} y creación de test específico
+    \item \textbf{Repetición del ciclo} con nuevo conocimiento adquirido
+\end{enumerate}
+
+Este enfoque iterativo permitió descubrir no solo errores de implementación, sino también malentendidos conceptuales sobre el funcionamiento del sistema original.
+
+\subsection{Dos Tipos de Descubrimientos}
+
+El proceso reveló dos categorías de problemas:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|p{5cm}|p{5cm}|}
+\hline
+\textbf{Tipo} & \textbf{Descripción} & \textbf{Impacto} \\
+\hline
+\textbf{Errores de implementación} & Bugs en la traducción de código C++ a Python & Comportamiento incorrecto, fácil de corregir una vez identificado \\
+\hline
+\textbf{Errores de comprensión} & Malentendidos sobre el diseño de Apollo & Requirieron re-análisis profundo del código original y rediseño \\
+\hline
+\end{tabular}
+\caption{Categorías de problemas descubiertos}
+\end{table}
+
+\section{Primera Versión Funcional}
+
+\subsection{Test Inicial: Video de Semáforo Cambiando}
+
+Una vez completada una primera versión funcional del pipeline completo, se realizó el primer test básico:
+
+\textbf{Objetivo:} Verificar que el sistema funciona end-to-end
+
+\textbf{Input:} Video de un semáforo cambiando de estado (verde → amarillo → rojo)
+
+\textbf{Proceso:}
+\begin{enumerate}
+    \item Extraer frames del video
+    \item Definir projection boxes manualmente para cada frame
+    \item Ejecutar pipeline completo frame por frame
+    \item Visualizar resultados (bounding boxes, colores detectados, tracking IDs)
+\end{enumerate}
+
+\textbf{Resultado:} El sistema ejecutaba sin crashes, pero los resultados no eran completamente confiables. Este test sirvió principalmente para confirmar que todas las etapas del pipeline estaban integradas correctamente.
+
+\subsection{Mejoras de Observabilidad}
+
+A partir del test inicial, se realizaron modificaciones para mejorar la capacidad de debugging:
+
+\subsubsection{Outputs Intermedios}
+
+Modificación del pipeline para retornar resultados de cada etapa:
+
+\begin{codesnippet}
+\begin{verbatim}
+result = {
+    'crops': [...],              # Etapa 1: Preprocessing
+    'detections': [...],         # Etapa 2: Detection
+    'assignments': [...],        # Etapa 3: Hungarian
+    'colors': [...],             # Etapa 4: Recognition
+    'tracked_states': [...]      # Etapa 5: Tracking
+}
+\end{verbatim}
+\end{codesnippet}
+
+\subsubsection{Visualizaciones}
+
+Herramientas para inspeccionar visualmente cada etapa:
+
+\begin{itemize}
+    \item Dibujar bounding boxes de detecciones sobre la imagen
+    \item Colorear boxes según el estado detectado (rojo, amarillo, verde)
+    \item Mostrar scores de confianza y tracking IDs
+    \item Visualizar projection boxes vs crops expandidos
+\end{itemize}
+
+\subsubsection{Logging Detallado}
+
+Sistema de logging estructurado:
+
+\begin{itemize}
+    \item Timestamp de procesamiento de cada frame
+    \item Número de detecciones por frame
+    \item Detalles de asignaciones projection→detection
+    \item Estados temporales del tracking (cambios de color, blink detection)
+\end{itemize}
+
+Estas mejoras fueron fundamentales para los descubrimientos posteriores.
+
+\section{Errores Descubiertos Durante el Desarrollo}
+
+\subsection{Error 1: Interpretación del Blink (Parpadeo)}
+
+\subsubsection{Síntoma}
+
+Al procesar videos con semáforos parpadeando, el sistema no detectaba correctamente el parpadeo.
+
+\subsubsection{Investigación}
+
+Revisión del código original de Apollo reveló:
+
+\begin{codesnippet}
+\begin{verbatim}
+// traffic_light/tracker/semantic.cc:187
+if (new_color == GREEN && blink_detected) {
+    // El blink solo se detecta en verde
+    semantic_table.blink_count++;
+}
+\end{verbatim}
+\end{codesnippet}
+
+\subsubsection{Error de Comprensión}
+
+\textbf{Asumido:} El blink (parpadeo) se aplicaba al amarillo, indicando precaución
+
+\textbf{Realidad:} El blink se detecta únicamente en el color \textbf{verde}, indicando que el semáforo está próximo a cambiar
+
+\subsubsection{Corrección}
+
+Se reescribió la lógica de detección de parpadeo para aplicarla solo al verde:
+
+\begin{codesnippet}
+\begin{verbatim}
+if new_color == "green":
+    time_since_bright = timestamp - st.last_bright_time
+    if (time_since_bright > self.blink_threshold and
+        st.last_dark_time > st.last_bright_time):
+        st.blink_count += 1
+\end{verbatim}
+\end{codesnippet}
+
+\subsection{Error 2: Secuencia de Colores de Semáforos}
+
+\subsubsection{Síntoma}
+
+La regla de seguridad "YELLOW después de RED → mantener RED" no tenía sentido lógico.
+
+\subsubsection{Investigación}
+
+Análisis del código de tracking reveló:
+
+\begin{codesnippet}
+\begin{verbatim}
+// traffic_light/tracker/semantic.cc:203
+// Regla: Si estaba en VERDE y detectamos AMARILLO, aceptar
+// Regla: Si estaba en ROJO y detectamos AMARILLO, rechazar
+if (previous_color == RED && new_color == YELLOW) {
+    return RED;  // Mantener rojo por seguridad
+}
+\end{verbatim}
+\end{codesnippet}
+
+\subsubsection{Error de Comprensión}
+
+\textbf{Asumido:} La secuencia era RED → YELLOW → GREEN (como en algunos países)
+
+\textbf{Realidad:} La secuencia correcta es GREEN → YELLOW → RED
+
+El amarillo solo puede aparecer \textbf{después del verde}, nunca después del rojo. Si el sistema detecta amarillo cuando el estado actual es rojo, es un error de detección y se mantiene el rojo por seguridad.
+
+\subsubsection{Corrección}
+
+Se invirtió la comprensión de la regla de secuencia en el código:
+
+\begin{codesnippet}
+\begin{verbatim}
+# Regla de seguridad: YELLOW solo puede venir después de GREEN
+if new_color == "yellow" and st.color == "red":
+    # Detección errónea, mantener RED
+    return st.color
+\end{verbatim}
+\end{codesnippet}
+
+\subsection{Error 3: Inputs del Algoritmo Húngaro}
+
+\subsubsection{Síntoma}
+
+Las asignaciones projection→detection eran inconsistentes o ilógicas (e.g., asignar semáforo lejano a projection cercana).
+
+\subsubsection{Investigación}
+
+Debug de la matriz de costos reveló valores incorrectos:
+
+\begin{itemize}
+    \item Distancias calculadas incorrectamente
+    \item Pesos 70\%-30\% aplicados en orden inverso
+    \item Penalty por estar fuera del crop no se aplicaba
+\end{itemize}
+
+\subsubsection{Error de Implementación}
+
+No se pasaban los parámetros correctos a la función de cálculo de costos:
+
+\begin{codesnippet}
+\begin{verbatim}
+# INCORRECTO (versión inicial)
+cost = 0.3 * dist_score + 0.7 * conf_score
+
+# CORRECTO (después de la corrección)
+cost = 0.7 * dist_score + 0.3 * conf_score
+\end{verbatim}
+\end{codesnippet}
+
+\subsubsection{Corrección}
+
+Se revisó completamente la construcción de la matriz de costos para que coincidiera exactamente con Apollo:
+
+\begin{codesnippet}
+\begin{verbatim}
+def compute_cost_matrix(projections, detections):
+    costs = np.zeros((len(projections), len(detections)))
+
+    for i, proj in enumerate(projections):
+        for j, det in enumerate(detections):
+            # Distancia gaussiana 2D
+            dist_score = calc_2d_gaussian_score(
+                proj.center(), det.center(),
+                sigma_x=100.0, sigma_y=100.0
+            )
+
+            # Confianza (clipped a 0.9)
+            conf_score = min(det.confidence, 0.9)
+
+            # Combinación 70% distancia, 30% confianza
+            cost = 0.7 * dist_score + 0.3 * conf_score
+
+            # Penalty si está fuera del crop
+            if not detection_inside_crop(det, proj.crop):
+                cost = 0.0
+
+            costs[i, j] = cost
+
+    return costs
+\end{verbatim}
+\end{codesnippet}
+
+\subsection{Error 4: Orden de Means BGR vs RGB}
+
+\subsubsection{Síntoma}
+
+El recognizer (clasificador de colores) tenía accuracy muy baja, confundiendo frecuentemente rojo con verde.
+
+\subsubsection{Investigación}
+
+Los means de normalización estaban en orden RGB:
+
+\begin{codesnippet}
+\begin{verbatim}
+# INCORRECTO
+MEANS_REC = [69.06, 66.58, 66.56]  # RGB order
+\end{verbatim}
+\end{codesnippet}
+
+Sin embargo, OpenCV devuelve imágenes en formato BGR:
+
+\begin{codesnippet}
+\begin{verbatim}
+image = cv2.imread('image.jpg')  # Returns BGR, not RGB!
+\end{verbatim}
+\end{codesnippet}
+
+\subsubsection{Error de Implementación}
+
+Los means se habían extraído de Apollo en el orden correcto (BGR), pero se invirtieron erróneamente al escribir el código Python.
+
+\subsubsection{Corrección}
+
+Se corrigió el orden de los means:
+
+\begin{codesnippet}
+\begin{verbatim}
+# CORRECTO
+MEANS_REC = [66.56, 66.58, 69.06]  # BGR order
+
+# Normalización
+crop[:, :, 0] -= MEANS_REC[0]  # Blue channel
+crop[:, :, 1] -= MEANS_REC[1]  # Green channel
+crop[:, :, 2] -= MEANS_REC[2]  # Red channel
+\end{verbatim}
+\end{codesnippet}
+
+Después de esta corrección, el accuracy del recognizer mejoró drásticamente.
+
+\subsection{Metodología de Corrección}
+
+Para cada error descubierto se siguió el mismo proceso:
+
+\begin{enumerate}
+    \item \textbf{Identificar el síntoma:} Comportamiento incorrecto observable
+    \item \textbf{Investigar el código original:} Revisar la implementación de Apollo línea por línea
+    \item \textbf{Comprender la causa:} Determinar si es error de implementación o de comprensión
+    \item \textbf{Corregir la reimplementación:} Ajustar el código para que coincida con Apollo
+    \item \textbf{Crear test específico:} Diseñar un caso de test que habría detectado este error
+    \item \textbf{Documentar el aprendizaje:} Registrar el error y su corrección
+\end{enumerate}
+
+Este proceso iterativo fue fundamental para alcanzar equivalencia funcional con Apollo.
+
+\section{Test de Cruce de Historiales}
+
+\subsection{Motivación}
+
+Con el sistema funcionando correctamente (después de las correcciones anteriores), se diseñó un test más sofisticado para intentar "romper" el tracking temporal.
+
+\subsection{Hipótesis Inicial}
+
+\textbf{Contexto:} El sistema mantiene un historial de estados para cada semáforo identificado por su signal\_id. Este historial se usa para aplicar reglas de seguridad (e.g., YELLOW después de RED → mantener RED).
+
+\textbf{Hipótesis:} Si se cruzan los historiales de dos semáforos (intercambiando sus IDs), el sistema podría fallar al detectar una transición inválida.
+
+\textbf{Ejemplo:}
+\begin{itemize}
+    \item Semáforo A: Historial [GREEN, GREEN, GREEN] → Ahora amarillo
+    \item Semáforo B: Historial [RED, RED, RED] → Ahora amarillo
+    \item Si cruzamos IDs: Semáforo A tendría historial de B (RED), nuevo estado YELLOW → ¡Transición inválida!
+\end{itemize}
+
+\subsection{Primer Intento: Modificación Manual de IDs}
+
+\subsubsection{Diseño del Test}
+
+Se modificó manualmente el código para intercambiar los signal\_ids entre dos semáforos:
+
+\begin{codesnippet}
+\begin{verbatim}
+# Frame N
+semaphore_A.signal_id = 1  # Historial: [GREEN, ...]
+semaphore_B.signal_id = 2  # Historial: [RED, ...]
+
+# Frame N+1 (MODIFICACIÓN MANUAL)
+semaphore_A.signal_id = 2  # Ahora tiene historial de B
+semaphore_B.signal_id = 1  # Ahora tiene historial de A
+\end{verbatim}
+\end{codesnippet}
+
+\subsubsection{Resultado}
+
+El test \textbf{apoyó la hipótesis}: El sistema efectivamente fallaba al aplicar las reglas de seguridad con historiales cruzados.
+
+\subsubsection{Problema con el Enfoque}
+
+Sin embargo, esta metodología no era coherente con un escenario real:
+
+\begin{itemize}
+    \item Modificar IDs manualmente no representa un caso que pueda ocurrir naturalmente
+    \item No es un test válido del sistema, sino una intervención artificial
+    \item No aporta conocimiento sobre vulnerabilidades reales
+\end{itemize}
+
+\subsection{Segundo Intento: Movimiento de Semáforos}
+
+\subsubsection{Diseño del Test Mejorado}
+
+Se buscó un escenario donde el cruce de IDs pudiera ocurrir \textbf{naturalmente}.
+
+\textbf{Idea:} Si dos semáforos se mueven en la imagen entre frames, el algoritmo húngaro (que pondera 70\% distancia, 30\% confianza) podría confundir sus IDs basándose en la proximidad espacial.
+
+\textbf{Configuración del test:}
+\begin{itemize}
+    \item Frame N:
+    \begin{itemize}
+        \item Semáforo A en posición (100, 100) con estado GREEN
+        \item Semáforo B en posición (300, 100) con estado YELLOW
+    \end{itemize}
+    \item Frame N+1: Ambos semáforos se desplazan significativamente
+    \begin{itemize}
+        \item Semáforo A ahora en (280, 100) (cerca de posición anterior de B)
+        \item Semáforo B ahora en (120, 100) (cerca de posición anterior de A)
+    \end{itemize}
+\end{itemize}
+
+\textbf{Expectativa:} El algoritmo húngaro podría asignar:
+\begin{itemize}
+    \item Semáforo A (nueva posición) → Signal ID de B (por proximidad)
+    \item Semáforo B (nueva posición) → Signal ID de A
+\end{itemize}
+
+\subsubsection{Resultado}
+
+El cruce de IDs ocurría \textbf{a veces sí, a veces no}, dependiendo de:
+\begin{itemize}
+    \item La magnitud del desplazamiento
+    \item Los scores de confianza de cada detección
+    \item La proximidad relativa después del movimiento
+\end{itemize}
+
+\subsubsection{Investigación del Comportamiento Inconsistente}
+
+Este comportamiento no determinístico motivó una investigación más profunda del sistema de tracking.
+
+\section{Descubrimientos Importantes sobre el Sistema}
+
+\subsection{Descubrimiento 1: Dos Tipos de IDs}
+
+La investigación del test de cruce de historiales reveló una distinción conceptual importante:
+
+\subsubsection{Signal ID vs Detection ID}
+
+Apollo maneja \textbf{dos tipos distintos de identificadores}:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|p{5cm}|p{5cm}|}
+\hline
+\textbf{ID Type} & \textbf{Origen} & \textbf{Persistencia} \\
+\hline
+\textbf{Signal ID} & Extraído del HD-Map (coordenadas 3D del mundo real) & Permanente, identifica el semáforo físico \\
+\hline
+\textbf{Detection ID} & Asignado durante la detección en el frame actual & Temporal, solo válido para el frame actual \\
+\hline
+\end{tabular}
+\caption{Diferencias entre tipos de IDs}
+\end{table}
+
+\textbf{Implicación crítica:} El tracking se basa en el \textbf{Signal ID}, no en el Detection ID.
+
+\subsubsection{Rol del HD-Map en el Tracking}
+
+Apollo no solo usa el HD-Map para generar projection boxes, sino también para \textbf{identificar persistentemente} cada semáforo:
+
+\begin{enumerate}
+    \item El HD-Map contiene coordenadas 3D de cada semáforo físico con un ID único
+    \item Estos IDs se asignan a las projection boxes antes de la detección
+    \item El algoritmo húngaro asigna detecciones a projection boxes
+    \item Las detecciones heredan el Signal ID de la projection box asignada
+    \item El tracking temporal se aplica sobre el Signal ID
+\end{enumerate}
+
+\textbf{Consecuencia:} Mover semáforos en la imagen (cambiar píxeles) no puede confundir al sistema real de Apollo, porque la identidad viene del HD-Map (coordenadas 3D del mundo), no de la posición en píxeles.
+
+\subsubsection{Invalidación del Test}
+
+Esta revelación invalidó el test de movimiento de semáforos:
+
+\begin{itemize}
+    \item El test asumía que el tracking se basaba solo en proximidad espacial en píxeles
+    \item En realidad, Apollo usa información geoespacial 3D del HD-Map
+    \item Nuestra reimplementación usa projection boxes pre-calculadas sin coordenadas 3D
+    \item El test no representa un escenario que pueda ocurrir en el sistema real
+\end{itemize}
+
+\textbf{Aprendizaje:} Un test que no se basa en un entendimiento profundo del sistema puede llevar a conclusiones erróneas.
+
+\subsection{Descubrimiento 2: Semantic ID No Implementado}
+
+Durante la creación del diagrama de flujo exhaustivo del sistema (motivado por los descubrimientos anteriores), se encontró una funcionalidad \textbf{diseñada pero no implementada}.
+
+\subsubsection{¿Qué es el Semantic ID?}
+
+Revisión del código de Apollo:
+
+\begin{codesnippet}
+\begin{verbatim}
+// traffic_light/region_proposal_component.cc:335
+int cur_semantic = 0;  // ← Siempre 0, hardcodeado
+for (auto& light : lights) {
+    light->semantic = cur_semantic;
+}
+\end{verbatim}
+\end{codesnippet}
+
+\textbf{Intención conceptual:} El semantic\_id debería agrupar semáforos de la misma intersección para aplicar \textbf{voting} (si 2 de 3 semáforos del cruce son verdes, el tercero también debería serlo).
+
+\textbf{Realidad:} El semantic\_id está \textbf{siempre asignado a 0} para todos los semáforos. El código de voting existe, pero nunca se ejecuta porque todos los semáforos tienen el mismo semantic\_id.
+
+\subsubsection{Implicaciones}
+
+\begin{enumerate}
+    \item \textbf{Sin agrupación por intersección:} Todos los semáforos se tratan independientemente
+
+    \item \textbf{Sin priorización por relevancia:} No hay distinción entre semáforos cercanos relevantes y lejanos irrelevantes
+
+    \item \textbf{Sin voting:} Las detecciones inconsistentes entre semáforos de la misma intersección no se corrigen
+\end{enumerate}
+
+\textbf{Oportunidad para testing:} Este descubrimiento abrió nuevas posibilidades de diseño de tests basados en la ausencia de esta funcionalidad.
+
+\section{Tests Exploratorios Basados en Conocimiento del Sistema}
+
+Con el entendimiento profundo adquirido, se diseñaron tests específicos basados en las características y limitaciones descubiertas.
+
+\subsection{Test de Confusión por Atardecer}
+
+\subsubsection{Motivación}
+
+El recognizer clasifica colores basándose en redes neuronales entrenadas con ciertos datos. Los colores del atardecer (naranja/amarillo del cielo) podrían confundir al clasificador.
+
+\subsubsection{Diseño del Test}
+
+\textbf{Input:} Video grabado durante el atardecer con semáforos visibles
+
+\textbf{Características del escenario:}
+\begin{itemize}
+    \item Iluminación naranja/amarilla dominante del cielo
+    \item Contraste reducido entre el semáforo y el fondo
+    \item Reflejos y saturación de colores cálidos
+\end{itemize}
+
+\textbf{Hipótesis:} El recognizer podría clasificar incorrectamente regiones del cielo como semáforos amarillos, o confundir el estado de semáforos reales.
+
+\subsubsection{Resultado}
+
+El test fue \textbf{exitoso} en revelar debilidades:
+
+\begin{itemize}
+    \item El sistema ocasionalmente clasificaba regiones del cielo como amarillo
+    \item En algunos frames, semáforos rojos se clasificaban como amarillos debido al tinte general de la escena
+    \item La confianza de las detecciones correctas era más baja de lo normal
+\end{itemize}
+
+\textbf{Hallazgo:} El sistema es vulnerable a condiciones de iluminación extrema que no estaban bien representadas en el dataset de entrenamiento.
+
+\subsection{Test de Semáforo Lejano (Basado en Semantic ID)}
+
+\subsubsection{Motivación}
+
+Basado en el descubrimiento de que semantic\_id no está implementado, diseñar un test que explote la ausencia de priorización por relevancia.
+
+\subsubsection{Diseño del Test}
+
+\textbf{Escenario:} Dos intersecciones visibles simultáneamente:
+\begin{itemize}
+    \item Intersección cercana: Semáforo relevante para el vehículo (verde)
+    \item Intersección lejana: Semáforo no relevante (rojo)
+\end{itemize}
+
+\textbf{Configuración de projection boxes:} Incluir ambos semáforos (cercano y lejano)
+
+\textbf{Hipótesis:} Sin semantic grouping, el sistema trata ambos semáforos por igual. El semáforo lejano en rojo podría influir en las decisiones del vehículo aunque no sea relevante para la maniobra actual.
+
+\subsubsection{Estado del Test}
+
+\textbf{Estado:} Test diseñado pero no ejecutado completamente en el marco del trabajo.
+
+\textbf{Valor:} El diseño del test ilustra cómo el conocimiento profundo del sistema (descubrimiento de semantic\_id no implementado) permite crear tests específicos que exponen decisiones de diseño cuestionables.
+
+\section{Resumen del Proceso de Testing}
+
+\subsection{Evolución del Enfoque}
+
+El proceso de testing evolucionó a través de tres fases:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|p{4cm}|p{5cm}|}
+\hline
+\textbf{Fase} & \textbf{Enfoque} & \textbf{Aprendizaje} \\
+\hline
+\textbf{Fase 1} & Testing básico funcional & Confirmación de integración end-to-end, descubrimiento de errores obvios \\
+\hline
+\textbf{Fase 2} & Corrección iterativa & Identificación de errores de implementación y comprensión mediante ejecución y análisis \\
+\hline
+\textbf{Fase 3} & Testing exploratorio basado en conocimiento & Diseño de tests específicos aprovechando el entendimiento profundo del sistema \\
+\hline
+\end{tabular}
+\caption{Evolución del enfoque de testing}
+\end{table}
+
+\subsection{Lecciones Aprendidas}
+
+\subsubsection{Lección 1: Tests Sin Comprensión Pueden Engañar}
+
+El test de cruce de historiales mediante movimiento de semáforos parecía válido, pero se basaba en una comprensión incorrecta del sistema. Solo después de entender el rol del HD-Map y los dos tipos de IDs se reveló que el test no era representativo de escenarios reales.
+
+\subsubsection{Lección 2: Los Mejores Tests Vienen del Conocimiento Interno}
+
+Los tests más valiosos (confusión por atardecer, semáforo lejano) surgieron después de comprender profundamente el sistema mediante reverse engineering. Este conocimiento permitió identificar debilidades específicas.
+
+\subsubsection{Lección 3: La Reimplementación Facilita la Experimentación}
+
+Tener control total sobre el código permitió:
+\begin{itemize}
+    \item Agregar instrumentación para debugging
+    \item Modificar componentes para aislar problemas
+    \item Iterar rápidamente en diseño de tests
+    \item Comparar versiones alternativas del código
+\end{itemize}
+
+Esto habría sido imposible o extremadamente difícil con el sistema Apollo original.
+
+\subsection{Tests Creados}
+
+La tabla siguiente resume todos los tests diseñados:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|l|p{4cm}|l|}
+\hline
+\textbf{Test} & \textbf{Tipo} & \textbf{Objetivo} & \textbf{Estado} \\
+\hline
+Video básico & Funcional & Verificar integración end-to-end & Ejecutado \\
+\hline
+Blink detection & Corrección & Validar detección de parpadeo en verde & Ejecutado \\
+\hline
+Secuencia colores & Corrección & Validar regla GREEN→YELLOW→RED & Ejecutado \\
+\hline
+Hungarian inputs & Corrección & Validar asignaciones projection→detection & Ejecutado \\
+\hline
+BGR normalization & Corrección & Validar orden de means & Ejecutado \\
+\hline
+Cruce historiales (manual) & Exploratorio & Intentar romper tracking & Ejecutado (inválido) \\
+\hline
+Cruce historiales (movimiento) & Exploratorio & Confundir IDs por movimiento & Ejecutado (inválido) \\
+\hline
+Confusión atardecer & Exploratorio & Iluminación extrema & Ejecutado \\
+\hline
+Semáforo lejano & Exploratorio & Explotar falta de semantic grouping & Diseñado \\
+\hline
+\end{tabular}
+\caption{Resumen de tests diseñados y ejecutados}
+\end{table}

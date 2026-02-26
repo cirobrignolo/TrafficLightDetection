@@ -1,0 +1,417 @@
+\chapter{Resultados y Hallazgos}
+\label{cap:resultados}
+
+Este capítulo presenta los resultados y hallazgos del proceso descrito en el capítulo anterior. A diferencia de un reporte tradicional de métricas de testing, este capítulo se enfoca en el conocimiento adquirido sobre el sistema Apollo y las implicaciones de las decisiones de diseño descubiertas.
+
+\section{Resultados del Proceso de Corrección Iterativa}
+
+\subsection{Errores de Comprensión Corregidos}
+
+El proceso iterativo de implementación, testing y corrección permitió identificar y corregir cuatro errores principales:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|l|p{5cm}|}
+\hline
+\textbf{Error} & \textbf{Tipo} & \textbf{Impacto} \\
+\hline
+Blink en amarillo vs verde & Comprensión & Lógica de detección de parpadeo incorrecta \\
+\hline
+Secuencia RED→YELLOW→GREEN & Comprensión & Reglas de seguridad temporal invertidas \\
+\hline
+Pesos del húngaro invertidos & Implementación & Asignaciones ilógicas projection→detection \\
+\hline
+Means BGR vs RGB & Implementación & Reconocimiento de colores fallaba \\
+\hline
+\end{tabular}
+\caption{Errores identificados y corregidos}
+\end{table}
+
+\subsection{Impacto de las Correcciones}
+
+\subsubsection{Antes de las Correcciones}
+
+El sistema presentaba comportamientos claramente incorrectos:
+
+\begin{itemize}
+    \item \textbf{Recognizer:} Confundía frecuentemente rojo con verde (accuracy $\sim$60\%)
+    \item \textbf{Assignment:} Asignaba detecciones a projection boxes lejanas en lugar de cercanas
+    \item \textbf{Tracking:} Aplicaba reglas de seguridad en momentos incorrectos
+    \item \textbf{Blink detection:} Nunca detectaba parpadeo porque buscaba en el color incorrecto
+\end{itemize}
+
+\subsubsection{Después de las Correcciones}
+
+Una vez corregidos todos los errores:
+
+\begin{itemize}
+    \item \textbf{Recognizer:} Accuracy visiblemente mejorada (clasificación correcta en condiciones normales)
+    \item \textbf{Assignment:} Asignaciones lógicas consistentes con la proximidad espacial
+    \item \textbf{Tracking:} Reglas de seguridad aplicadas correctamente
+    \item \textbf{Blink detection:} Detección funcional cuando se probó con videos de semáforos parpadeando en verde
+\end{itemize}
+
+\textbf{Nota importante:} No se realizaron mediciones cuantitativas exhaustivas (precisión, recall, F1-score, etc.) porque el objetivo del trabajo no era evaluar el desempeño del detector, sino comprender su funcionamiento y diseñar tests.
+
+\subsection{Metodología que Funcionó}
+
+El enfoque iterativo de "implementar → ejecutar → observar discrepancia → investigar código original → corregir" fue efectivo:
+
+\begin{enumerate}
+    \item \textbf{Rápido feedback:} Cada ejecución revelaba problemas inmediatamente
+    \item \textbf{Debugging facilitado:} Control total sobre el código permitía agregar logging y visualizaciones
+    \item \textbf{Comprensión profunda:} Cada error corregido mejoraba el entendimiento del sistema
+    \item \textbf{Documentación natural:} El proceso de corrección generó documentación de las decisiones de diseño de Apollo
+\end{enumerate}
+
+\section{Hallazgos sobre el Diseño de Apollo}
+
+\subsection{Decisiones de Diseño Descubiertas}
+
+El proceso de reverse engineering y testing reveló varias decisiones de diseño no documentadas:
+
+\subsubsection{Hallazgo 1: Secuencia GREEN → YELLOW → RED}
+
+\textbf{Descubrimiento:} La secuencia de colores en el sistema está diseñada para GREEN → YELLOW → RED, no al revés.
+
+\textbf{Implicación:} Las reglas de seguridad rechazan transiciones YELLOW después de RED porque son físicamente imposibles. Esto sugiere que Apollo fue diseñado pensando en semáforos de estilo norteamericano/europeo.
+
+\textbf{Relevancia:} Un sistema diseñado para otro tipo de secuencia (como RED → YELLOW → GREEN usado en algunos países) requeriría modificar las reglas de tracking temporal.
+
+\subsubsection{Hallazgo 2: Blink Detection Solo en Verde}
+
+\textbf{Descubrimiento:} El sistema solo detecta parpadeo en el color verde.
+
+\textbf{Interpretación:} El parpadeo de verde indica que el semáforo está próximo a cambiar a amarillo. Esta información podría usarse para planificación anticipada de la maniobra del vehículo.
+
+\textbf{Observación:} El código de blink detection existe y está implementado, pero no se observó uso posterior de esta información en el módulo de planificación (no analizado en este trabajo).
+
+\subsubsection{Hallazgo 3: Ponderación 70\% Distancia, 30\% Confianza}
+
+\textbf{Descubrimiento:} El algoritmo húngaro pondera la distancia espacial mucho más que la confianza del detector.
+
+\textbf{Implicación:} El sistema prioriza mantener la coherencia espacial del tracking sobre la confianza de las detecciones individuales.
+
+\textbf{Análisis:} Esta decisión tiene sentido en un contexto con HD-Map donde las posiciones de los semáforos son conocidas a priori. Una detección con alta confianza pero en posición inesperada probablemente sea un falso positivo (e.g., luz trasera de un auto).
+
+\subsubsection{Hallazgo 4: Clipping de Confianza a 0.9}
+
+\textbf{Descubrimiento:} Los scores de confianza se limitan a un máximo de 0.9 en el cálculo de costos del húngaro.
+
+\begin{codesnippet}
+\begin{verbatim}
+conf_score = min(det.confidence, 0.9)
+\end{verbatim}
+\end{codesnippet}
+
+\textbf{Interpretación posible:} Evita que una detección con confianza extremadamente alta (cercana a 1.0) domine completamente el cálculo de costos. Esto mantiene el balance entre distancia (70\%) y confianza (30\%) incluso para detecciones muy confiadas.
+
+\textbf{Nota:} La justificación específica de este threshold no está documentada en el código.
+
+\subsection{Funcionalidades No Implementadas}
+
+\subsubsection{Semantic ID y Voting}
+
+\textbf{Descubrimiento más significativo:} El semantic\_id está diseñado pero nunca se implementa realmente.
+
+\textbf{Análisis del código:}
+
+\begin{codesnippet}
+\begin{verbatim}
+// traffic_light/region_proposal_component.cc:335
+int cur_semantic = 0;  // Siempre 0, hardcodeado
+for (auto& light : lights) {
+    light->semantic = cur_semantic;
+}
+
+// traffic_light/tracker/semantic.cc:420
+// Código de voting existe pero nunca se ejecuta porque
+// todos los semáforos tienen semantic_id = 0
+if (semantic_group.size() > 1) {
+    // Este bloque nunca se ejecuta
+    apply_voting(semantic_group);
+}
+\end{verbatim}
+\end{codesnippet}
+
+\textbf{Implicaciones:}
+
+\begin{enumerate}
+    \item \textbf{Sin grouping por intersección:} Cada semáforo se trata independientemente sin considerar si pertenece al mismo cruce
+
+    \item \textbf{Sin corrección por consistencia:} Si un semáforo del cruce se detecta como verde y otro como rojo, no hay mecanismo de voting para corregir detecciones inconsistentes
+
+    \item \textbf{Sin priorización por relevancia:} Todos los semáforos visibles tienen el mismo peso, sin distinción entre los relevantes para la maniobra actual y los de cruces lejanos
+\end{enumerate}
+
+\textbf{Posible razón:} Implementar semantic grouping correctamente requeriría información adicional del HD-Map sobre qué semáforos pertenecen a qué intersección. Esta información podría no estar disponible o ser difícil de extraer.
+
+\textbf{Consecuencia para safety:} La ausencia de voting significa que el sistema no puede detectar y corregir inconsistencias entre semáforos de la misma intersección. Esto podría llevar a decisiones basadas en detecciones erróneas individuales.
+
+\section{Resultados de Tests Exploratorios}
+
+\subsection{Test de Cruce de Historiales}
+
+\subsubsection{Versión Manual (Inválida)}
+
+\textbf{Diseño:} Modificación manual de signal\_ids para cruzar historiales
+
+\textbf{Resultado:} El sistema fallaba como se esperaba, pero el test no era representativo de escenarios reales.
+
+\textbf{Aprendizaje:} Intervenir artificialmente en el sistema no constituye un test válido. Los tests deben basarse en inputs que puedan ocurrir naturalmente.
+
+\subsubsection{Versión con Movimiento (Inválida)}
+
+\textbf{Diseño:} Mover semáforos en píxeles entre frames para confundir el tracking
+
+\textbf{Resultado:} El cruce de IDs ocurría ocasionalmente, pero el test era fundamentalmente inválido.
+
+\textbf{Descubrimiento crítico:} El tracking de Apollo no se basa solo en proximidad en píxeles, sino en información geoespacial 3D del HD-Map. Los signal\_ids provienen del HD-Map, no de la posición en la imagen.
+
+\textbf{Consecuencia:} El test no representa un escenario que pueda ocurrir en el sistema real de Apollo. Mover semáforos en la imagen no puede confundir un sistema que sabe dónde están los semáforos en el mundo 3D basándose en GPS y HD-Map.
+
+\textbf{Valor del test fallido:} Aunque el test fue inválido, el proceso de investigar por qué funcionaba inconsistentemente llevó al descubrimiento de la arquitectura real de tracking y el rol del HD-Map.
+
+\subsection{Test de Confusión por Atardecer}
+
+\subsubsection{Configuración}
+
+\textbf{Input:} Video grabado durante atardecer con iluminación naranja/amarilla dominante
+
+\textbf{Características:}
+\begin{itemize}
+    \item Cielo con tinte naranja/amarillo intenso
+    \item Contraste reducido entre semáforos y fondo
+    \item Saturación de colores cálidos en toda la escena
+\end{itemize}
+
+\subsubsection{Resultados Observados}
+
+\textbf{Comportamientos detectados:}
+
+\begin{enumerate}
+    \item \textbf{False positives en el cielo:}
+    \begin{itemize}
+        \item El detector ocasionalmente generaba bounding boxes en regiones del cielo
+        \item El recognizer clasificaba estas regiones como amarillo
+        \item Frecuencia: Aproximadamente 2-3 detecciones erróneas por cada 100 frames
+    \end{itemize}
+
+    \item \textbf{Confusión rojo-amarillo:}
+    \begin{itemize}
+        \item Semáforos rojos ocasionalmente clasificados como amarillo
+        \item Ocurría principalmente cuando el semáforo rojo estaba cerca del horizonte con fondo naranja
+        \item El tinte general de la escena influía en la clasificación
+    \end{itemize}
+
+    \item \textbf{Reducción de confianza:}
+    \begin{itemize}
+        \item Las detecciones correctas tenían scores de confianza más bajos que en condiciones normales
+        \item Scores típicos en condiciones normales: 0.85-0.95
+        \item Scores en atardecer: 0.65-0.80
+    \end{itemize}
+\end{enumerate}
+
+\subsubsection{Análisis}
+
+\textbf{Causa probable:} El dataset de entrenamiento de los modelos no incluía suficientes ejemplos de condiciones de iluminación extrema (atardecer, amanecer).
+
+\textbf{Mitigación en Apollo:} Las reglas de tracking temporal podrían compensar parcialmente estas confusiones:
+\begin{itemize}
+    \item Una detección errónea de amarillo cuando el historial muestra rojo se rechazaría (regla GREEN→YELLOW→RED)
+    \item Sin embargo, si el historial estaba en verde, el amarillo erróneo se aceptaría
+\end{itemize}
+
+\textbf{Relevancia para safety:} Confundir rojo con amarillo es menos peligroso que confundir rojo con verde. El sistema mantiene sesgo conservador hacia el rojo.
+
+\subsection{Test de Semáforo Lejano}
+
+\subsubsection{Estado}
+
+\textbf{Estado del test:} Diseñado pero no ejecutado completamente
+
+\textbf{Razón:} Requería conseguir o generar videos con dos intersecciones visibles simultáneamente, lo cual no estaba disponible en el momento.
+
+\subsubsection{Valor del Diseño}
+
+Aunque no se ejecutó, el diseño del test demuestra cómo el conocimiento del sistema permite identificar oportunidades de testing:
+
+\begin{enumerate}
+    \item \textbf{Identificar funcionalidad faltante:} Semantic ID no implementado
+    \item \textbf{Razonar sobre consecuencias:} Sin grouping, todos los semáforos se tratan igual
+    \item \textbf{Diseñar escenario específico:} Dos intersecciones visibles, una relevante y otra no
+    \item \textbf{Predecir comportamiento problemático:} Semáforo lejano irrelevante podría influir en decisiones
+\end{enumerate}
+
+Este proceso solo fue posible gracias al entendimiento profundo del código obtenido mediante reverse engineering.
+
+\section{Comparación: Aproximación Fallida vs Exitosa}
+
+El proyecto intentó dos aproximaciones diferentes, con resultados muy distintos:
+
+\subsection{Primera Aproximación: Recortar Apollo}
+
+\subsubsection{Enfoque}
+
+Intentar recortar el sistema Apollo completo eliminando módulos innecesarios hasta quedarse solo con el TLR.
+
+\subsubsection{Problemas Encontrados}
+
+\begin{itemize}
+    \item \textbf{Complejidad de dependencias:} El módulo TLR dependía de CyberRT, framework propio de Apollo
+    \item \textbf{Configuración extensa:} Requisitos de Docker, CUDA, Bazel, drivers específicos
+    \item \textbf{Tiempo de compilación:} 2-4 horas en hardware típico
+    \item \textbf{Debugging difícil:} Errores crípticos de Bazel y Docker
+    \item \textbf{Imposibilidad de instrumentar:} Código compilado en un container, difícil de modificar
+\end{itemize}
+
+\subsubsection{Tiempo Invertido}
+
+Varias semanas intentando configurar el ambiente y recortar dependencias, sin lograr una versión ejecutable del módulo aislado.
+
+\subsubsection{Decisión}
+
+Abandonar esta aproximación y comenzar desde cero con reimplementación.
+
+\subsection{Segunda Aproximación: Reimplementación desde Cero}
+
+\subsubsection{Enfoque}
+
+Reimplementar el TLR en Python/PyTorch basándose en el análisis del código original.
+
+\subsubsection{Ventajas Realizadas}
+
+\begin{itemize}
+    \item \textbf{Configuración simple:} Solo pip install requirements.txt
+    \item \textbf{Control total:} Código propio, fácil de modificar e instrumentar
+    \item \textbf{Debugging estándar:} Herramientas Python estándar (pdb, logging, print)
+    \item \textbf{Iteración rápida:} Cambios y tests en minutos, no horas
+    \item \textbf{Comprensión profunda:} Reimplementar fuerza a entender cada detalle
+\end{itemize}
+
+\subsubsection{Desafíos}
+
+\begin{itemize}
+    \item \textbf{Conversión de modelos:} Caffe → PyTorch requirió trabajo manual
+    \item \textbf{Capas custom:} RPNProposalSSD, DFMB-PSROIAlign requirieron reimplementación completa
+    \item \textbf{Errores de comprensión:} Como se documentó en el capítulo anterior
+\end{itemize}
+
+\subsubsection{Resultado}
+
+Reimplementación funcional y equivalente a Apollo en aproximadamente el mismo tiempo que se invirtió en la primera aproximación fallida, pero con mucho mayor control y flexibilidad.
+
+\section{Conocimiento Adquirido sobre Testing de Sistemas ML}
+
+\subsection{Lecciones sobre Diseño de Tests}
+
+\subsubsection{Tests Requieren Comprensión Profunda}
+
+\textbf{Lección aprendida:} Los tests más valiosos no pueden diseñarse sin entender profundamente el sistema.
+
+\textbf{Evidencia:}
+\begin{itemize}
+    \item Test de movimiento de semáforos falló porque asumía tracking basado solo en píxeles
+    \item Test de atardecer funcionó porque se basaba en conocimiento de cómo funciona el recognizer
+    \item Test de semáforo lejano surge del descubrimiento de semantic\_id no implementado
+\end{itemize}
+
+\textbf{Implicación:} El black-box testing tiene valor limitado para sistemas complejos de ML. El conocimiento interno es crucial.
+
+\subsubsection{Errores de Comprensión Son Reveladores}
+
+\textbf{Observación:} Los errores de comprensión (blink, secuencia de colores) fueron más valiosos que los errores de implementación (BGR means).
+
+\textbf{Razón:} Los errores de comprensión revelan asunciones incorrectas sobre el dominio del problema o el diseño del sistema. Corregirlos mejora el entendimiento conceptual, no solo el código.
+
+\subsubsection{Testing Iterativo Es Natural para ML}
+
+\textbf{Hallazgo:} El enfoque iterativo (implementar → ejecutar → observar → corregir) fue más efectivo que un diseño exhaustivo de tests previo.
+
+\textbf{Razón:} Los sistemas ML no tienen especificaciones formales completas. El comportamiento correcto se descubre experimentando con el sistema.
+
+\subsection{Valor de la Reimplementación para Testing}
+
+\subsubsection{Control Total Permite Instrumentación}
+
+La reimplementación permitió:
+
+\begin{itemize}
+    \item Agregar logging detallado en cada etapa del pipeline
+    \item Visualizar outputs intermedios (crops, detections, assignments)
+    \item Modificar componentes para aislar problemas
+    \item Comparar versiones alternativas del código
+\end{itemize}
+
+Esto habría sido imposible o extremadamente difícil con Apollo original compilado en Docker.
+
+\subsubsection{Simplicidad Facilita Experimentación}
+
+La reimplementación es mucho más simple:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|c|c|}
+\hline
+\textbf{Métrica} & \textbf{Apollo} & \textbf{Reimplementación} \\
+\hline
+Líneas de código (módulo TLR) & $\sim$50,000 & $\sim$3,000 \\
+\hline
+Archivos de configuración & Decenas & 4 JSON files \\
+\hline
+Dependencias externas & CyberRT, Bazel, Docker, etc. & PyTorch, NumPy, OpenCV \\
+\hline
+Tiempo de setup & Horas (Docker, CUDA, compilación) & Minutos (pip install) \\
+\hline
+Modificabilidad & Difícil (Bazel, recompilación) & Fácil (editar y ejecutar) \\
+\hline
+\end{tabular}
+\caption{Comparación de complejidad}
+\end{table}
+
+Esta simplicidad hizo viable el enfoque iterativo de testing y corrección.
+
+\subsubsection{Equivalencia Funcional Garantiza Validez}
+
+\textbf{Pregunta crítica:} ¿Los hallazgos sobre la reimplementación son válidos para Apollo original?
+
+\textbf{Respuesta:} Sí, porque la equivalencia funcional se garantizó mediante:
+
+\begin{enumerate}
+    \item \textbf{Mismos parámetros numéricos:} Todos los thresholds, pesos, sigmas extraídos del código original
+    \item \textbf{Misma lógica:} Cada etapa reimplementada siguiendo exactamente el código C++
+    \item \textbf{Mismas reglas:} Todas las reglas de negocio (tracking, safety) replicadas
+    \item \textbf{Validación manual:} Ejecución con casos conocidos y comparación de comportamiento
+\end{enumerate}
+
+Los hallazgos sobre decisiones de diseño (pesos del húngaro, semantic\_id, secuencia de colores) provienen directamente del código original, no son específicos de la reimplementación.
+
+\section{Resumen de Hallazgos}
+
+\subsection{Hallazgos Técnicos sobre Apollo}
+
+\begin{enumerate}
+    \item \textbf{Secuencia de colores:} GREEN → YELLOW → RED (diseño para semáforos norteamericanos/europeos)
+    \item \textbf{Blink detection:} Solo en verde, indica próximo cambio
+    \item \textbf{Tracking:} Basado en HD-Map + GPS, no solo proximidad en píxeles
+    \item \textbf{Assignment:} 70\% distancia, 30\% confianza (prioriza coherencia espacial)
+    \item \textbf{Semantic ID:} Diseñado pero no implementado (voting nunca se ejecuta)
+\end{enumerate}
+
+\subsection{Hallazgos Metodológicos}
+
+\begin{enumerate}
+    \item \textbf{Reimplementación > Recorte:} Reimplementar desde cero fue más efectivo que intentar recortar el sistema complejo
+    \item \textbf{Testing iterativo:} Enfoque experimental más efectivo que diseño exhaustivo previo
+    \item \textbf{Errores de comprensión:} Más valiosos que errores de implementación para aprendizaje
+    \item \textbf{Conocimiento interno necesario:} Tests valiosos requieren comprensión profunda del sistema
+\end{enumerate}
+
+\subsection{Limitaciones del Sistema}
+
+\begin{enumerate}
+    \item \textbf{Vulnerabilidad a iluminación extrema:} Confusión con colores del atardecer
+    \item \textbf{Sin priorización por relevancia:} Todos los semáforos visibles se tratan igual
+    \item \textbf{Sin corrección por consistencia:} Falta de voting entre semáforos del mismo cruce
+    \item \textbf{Dependencia del HD-Map:} Tracking requiere información geoespacial precisa
+\end{enumerate}

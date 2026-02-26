@@ -1,0 +1,419 @@
+\chapter{Guía de Uso del Sistema}
+\label{apendice:guia_uso}
+
+Este apéndice proporciona instrucciones detalladas para instalar, configurar y utilizar la reimplementación del sistema de detección de semáforos.
+
+\section{Requisitos del Sistema}
+
+\subsection{Hardware Recomendado}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Componente} & \textbf{Especificación} \\
+\hline
+CPU & Intel i5/i7 o AMD equivalente (multi-core) \\
+RAM & Mínimo 8 GB, recomendado 16 GB \\
+GPU & NVIDIA con soporte CUDA (opcional pero recomendado) \\
+Almacenamiento & 5 GB libres \\
+\hline
+\end{tabular}
+\caption{Requisitos de hardware}
+\end{table}
+
+\subsection{Software Requerido}
+
+\begin{itemize}
+    \item Python 3.7 o superior
+    \item CUDA Toolkit (opcional, si se usa GPU)
+    \item Sistema operativo: Linux (Ubuntu 18.04+), macOS, o Windows 10+
+\end{itemize}
+
+\section{Instalación}
+
+\subsection{Clonar el Repositorio}
+
+\begin{codesnippet}
+\begin{verbatim}
+git clone [URL_DEL_REPOSITORIO]
+cd TrafficLightDetection
+\end{verbatim}
+\end{codesnippet}
+
+\subsection{Crear Entorno Virtual (Recomendado)}
+
+\begin{codesnippet}
+\begin{verbatim}
+# Crear entorno virtual
+python3 -m venv venv
+
+# Activar entorno
+# En Linux/macOS:
+source venv/bin/activate
+# En Windows:
+venv\Scripts\activate
+\end{verbatim}
+\end{codesnippet}
+
+\subsection{Instalar Dependencias}
+
+\begin{codesnippet}
+\begin{verbatim}
+pip install -r requirements.txt
+\end{verbatim}
+\end{codesnippet}
+
+Las principales dependencias incluyen:
+\begin{itemize}
+    \item PyTorch $\geq$ 1.8.0
+    \item torchvision
+    \item NumPy
+    \item OpenCV (cv2)
+    \item Matplotlib
+\end{itemize}
+
+\subsection{Verificar Instalación}
+
+\begin{codesnippet}
+\begin{verbatim}
+# Verificar PyTorch
+python -c "import torch; print(torch.__version__)"
+
+# Verificar CUDA (si aplica)
+python -c "import torch; print(torch.cuda.is_available())"
+\end{verbatim}
+\end{codesnippet}
+
+\section{Uso Básico}
+
+\subsection{API Principal}
+
+El punto de entrada principal es la función \texttt{load\_pipeline()}:
+
+\begin{codesnippet}
+\begin{verbatim}
+from tlr.pipeline import load_pipeline
+import cv2
+
+# Cargar pipeline
+# Para GPU:
+pipeline = load_pipeline('cuda:0')
+# Para CPU:
+# pipeline = load_pipeline('cpu')
+
+# Cargar imagen
+image = cv2.imread('path/to/image.jpg')
+
+# Definir projection boxes
+# Formato: [x1, y1, x2, y2] para cada ROI
+projection_boxes = [
+    [100, 50, 150, 120],  # box 1
+    [500, 80, 550, 150],  # box 2
+]
+
+# Ejecutar detección
+result = pipeline(image, projection_boxes)
+
+# Resultado contiene:
+# - result['bboxes']: coordenadas de semáforos detectados
+# - result['colors']: estado de cada semáforo
+# - result['scores']: confianza de cada detección
+\end{verbatim}
+\end{codesnippet}
+
+\subsection{Procesamiento de Video}
+
+\begin{codesnippet}
+\begin{verbatim}
+import cv2
+from tlr.pipeline import load_pipeline
+
+# Cargar pipeline
+pipeline = load_pipeline('cuda:0')
+
+# Abrir video
+cap = cv2.VideoCapture('video.mp4')
+frame_count = 0
+
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    # Procesar frame
+    # (projection_boxes debería venir de HD-map o archivo)
+    result = pipeline(frame, projection_boxes)
+
+    # Visualizar resultados
+    for bbox, color, score in zip(result['bboxes'],
+                                   result['colors'],
+                                   result['scores']):
+        x1, y1, x2, y2 = bbox
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(frame, f'{color} ({score:.2f})',
+                   (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX,
+                   0.5, (0, 255, 0), 2)
+
+    # Mostrar frame
+    cv2.imshow('Traffic Light Detection', frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+    frame_count += 1
+
+cap.release()
+cv2.destroyAllWindows()
+\end{verbatim}
+\end{codesnippet}
+
+\section{Scripts de Ejemplo}
+
+\subsection{Detección en Imagen Individual}
+
+\begin{codesnippet}
+\begin{verbatim}
+python example.py
+\end{verbatim}
+\end{codesnippet}
+
+Procesa una imagen de ejemplo y muestra resultados.
+
+\subsection{Detección con Tracking}
+
+\begin{codesnippet}
+\begin{verbatim}
+python example_with_tracking.py
+\end{verbatim}
+\end{codesnippet}
+
+Demuestra el uso del módulo de tracking temporal.
+
+\subsection{Procesamiento en Batch}
+
+\begin{codesnippet}
+\begin{verbatim}
+python run_pipeline_batch.py
+\end{verbatim}
+\end{codesnippet}
+
+Procesa múltiples imágenes de forma eficiente.
+
+\subsection{Modo Debug}
+
+\begin{codesnippet}
+\begin{verbatim}
+python run_pipeline_debug.py
+\end{verbatim}
+\end{codesnippet}
+
+Ejecuta el pipeline con salida detallada de debugging y visualizaciones intermedias.
+
+\section{Herramientas Auxiliares}
+
+\subsection{Extracción de Frames de Video}
+
+\textbf{Manual:}
+\begin{codesnippet}
+\begin{verbatim}
+python extract_frames_manual.py --video input.mp4 --output frames/
+\end{verbatim}
+\end{codesnippet}
+
+\textbf{Automática:}
+\begin{codesnippet}
+\begin{verbatim}
+python auto_extraction_of_frames.py --video input.mp4
+\end{verbatim}
+\end{codesnippet}
+
+\subsection{Selección de Projection Boxes}
+
+\textbf{Interactiva:}
+\begin{codesnippet}
+\begin{verbatim}
+python select_projection_and_append.py --image frame.jpg
+\end{verbatim}
+\end{codesnippet}
+
+Permite seleccionar ROIs manualmente con el mouse.
+
+\textbf{Programática:}
+\begin{codesnippet}
+\begin{verbatim}
+python projection_boxes_generator.py --config config.json
+\end{verbatim}
+\end{codesnippet}
+
+\section{Ejecución de Tests}
+
+\subsection{Suite Completa de Tests}
+
+\begin{codesnippet}
+\begin{verbatim}
+# Ejecutar todos los tests
+pytest tests/
+
+# Con salida verbose
+pytest -v tests/
+
+# Con medición de cobertura
+pytest --cov=src/tlr tests/
+\end{verbatim}
+\end{codesnippet}
+
+\subsection{Tests por Categoría}
+
+\begin{codesnippet}
+\begin{verbatim}
+# Solo tests de validación
+pytest tests/validation/
+
+# Solo tests exploratorios
+pytest tests/exploratory/
+
+# Solo tests de propiedades
+pytest tests/properties/
+
+# Solo tests metamórficos
+pytest tests/metamorphic/
+\end{verbatim}
+\end{codesnippet}
+
+\subsection{Tests Específicos}
+
+\begin{codesnippet}
+\begin{verbatim}
+# Test específico de módulo
+pytest tests/validation/test_detection.py
+
+# Test específico de función
+pytest tests/validation/test_detection.py::test_nms_basic
+\end{verbatim}
+\end{codesnippet}
+
+\section{Configuración}
+
+\subsection{Archivos de Configuración}
+
+Los modelos usan archivos de configuración en \texttt{src/tlr/confs/}:
+
+\begin{verbatim}
+src/tlr/confs/
+├── detector_config.json     # Configuración del detector
+├── hori_config.json         # Clasificador horizontal
+├── vert_config.json         # Clasificador vertical
+└── quad_config.json         # Clasificador quad
+\end{verbatim}
+
+\subsection{Modificar Parámetros}
+
+Ejemplo de modificación de parámetros:
+
+\begin{codesnippet}
+\begin{verbatim}
+{
+  "crop_scale": 2.5,
+  "min_crop_size": 270,
+  "nms_threshold": 0.6,
+  "confidence_threshold": 0.3,
+  "means_detector": [102.98, 115.95, 122.77],
+  "means_recognizer": [66.56, 66.58, 69.06]
+}
+\end{verbatim}
+\end{codesnippet}
+
+\section{Solución de Problemas}
+
+\subsection{CUDA Out of Memory}
+
+Si encuentra errores de memoria en GPU:
+
+\begin{itemize}
+    \item Reducir el tamaño de batch (si procesa múltiples imágenes)
+    \item Procesar imágenes de menor resolución
+    \item Usar CPU en lugar de GPU: \texttt{load\_pipeline('cpu')}
+\end{itemize}
+
+\subsection{Rendimiento Bajo en CPU}
+
+El sistema está optimizado para GPU. En CPU:
+
+\begin{itemize}
+    \item Espere tiempos de procesamiento más lentos (5-10x)
+    \item Considere procesar en batch para amortizar overhead
+    \item Reduzca resolución de entrada si es posible
+\end{itemize}
+
+\subsection{Errores de OpenCV}
+
+Si hay conflictos con OpenCV:
+
+\begin{codesnippet}
+\begin{verbatim}
+pip uninstall opencv-python opencv-contrib-python
+pip install opencv-python==4.5.5.64
+\end{verbatim}
+\end{codesnippet}
+
+\subsection{Modelos No Encontrados}
+
+Si falta algún archivo de modelo:
+
+\begin{codesnippet}
+\begin{verbatim}
+# Verificar que existen los modelos
+ls src/tlr/weights/
+
+# Deberían estar:
+# - tl.torch
+# - hori.torch
+# - vert.torch
+# - quad.torch
+\end{verbatim}
+\end{codesnippet}
+
+\section{Estructura de Directorios del Proyecto}
+
+\begin{verbatim}
+TrafficLightDetection/
+├── src/
+│   └── tlr/
+│       ├── pipeline.py           # Pipeline principal
+│       ├── detector.py           # Detector de semáforos
+│       ├── recognizer.py         # Clasificadores
+│       ├── tracking.py           # Tracking temporal
+│       ├── selector.py           # Asignación húngara
+│       ├── hungarian_optimizer.py
+│       ├── utils.py              # Utilidades
+│       ├── weights/              # Modelos pre-entrenados
+│       └── confs/                # Configuraciones
+├── tests/
+│   ├── validation/               # Tests oracle-based
+│   ├── properties/               # Tests basados en propiedades
+│   ├── exploratory/              # Tests exploratorios
+│   └── metamorphic/              # Tests metamórficos
+├── inputTesis/                   # Videos de entrada
+├── frames_labeled/               # Frames con ground truth
+├── frames_auto_labeled/          # Frames auto-etiquetados
+├── examples/                     # Outputs de ejemplo
+├── docs/                         # Documentación
+│   ├── tesis/                    # Documentos de la tesis
+│   └── ...
+├── example.py                    # Script de ejemplo básico
+├── example_with_tracking.py      # Ejemplo con tracking
+├── run_pipeline_batch.py         # Procesamiento en batch
+├── run_pipeline_debug.py         # Modo debug
+├── requirements.txt              # Dependencias
+└── README.md                     # Readme del proyecto
+\end{verbatim}
+
+\section{Contacto y Soporte}
+
+Para preguntas, issues o contribuciones:
+
+\begin{itemize}
+    \item \textbf{Repositorio:} [URL DEL REPOSITORIO]
+    \item \textbf{Issues:} [URL DE ISSUES]
+    \item \textbf{Email:} cirob100@gmail.com
+\end{itemize}

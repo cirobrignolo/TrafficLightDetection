@@ -1,0 +1,185 @@
+% ******************************************************** %
+%         TEMPLATE DE TESIS - TRAFFIC LIGHT DETECTION      %
+% ******************************************************** %
+% ******************************************************** %
+%                                                          %
+% ALGUNOS PAQUETES REQUERIDOS (EN UBUNTU):                 %
+% ========================================
+%                                                          %
+% texlive-latex-base                                       %
+% texlive-latex-recommended                                %
+% texlive-fonts-recommended                                %
+% texlive-latex-extra                                      %
+% texlive-lang-spanish                                     %
+% texlive-bibtex-extra                                     %
+% ******************************************************** %
+
+
+\documentclass[a4paper,12pt]{report}
+\usepackage[spanish]{babel}
+\usepackage[utf8]{inputenc}
+\usepackage{charter}   % tipografia
+\usepackage{graphicx}
+\usepackage{paralist} %itemize inline
+\usepackage{multirow} %tablas
+\usepackage{float}
+\usepackage{pgfplots}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{algpseudocode}
+\usepackage{verbatim}
+\usepackage{forest,adjustbox}
+
+\usepackage{amsmath, amsthm, amssymb}
+
+\usepackage{underscore}
+\usepackage{caratula}
+\usepackage{hyperref}
+
+% Para links de colores
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+    citecolor=blue,
+}
+
+% ********************************************************* %
+% ~~~~~~~~              Code snippets             ~~~~~~~~~ %
+% ********************************************************* %
+
+\usepackage{color} % para snippets de codigo coloreados
+\usepackage{fancybox}  % para el sbox de los snippets de codigo
+
+\definecolor{litegrey}{gray}{0.94}
+
+\newenvironment{codesnippet}{%
+	\begin{Sbox}\begin{minipage}{\textwidth}\sffamily\small}%
+	{\end{minipage}\end{Sbox}%
+		\begin{center}%
+		\vspace{-0.4cm}\colorbox{litegrey}{\TheSbox}\end{center}\vspace{0.3cm}}
+
+% Para código Python con syntax highlighting
+\usepackage{minted}
+
+% ********************************************************* %
+% ~~~~~~~~         Formato de las páginas         ~~~~~~~~~ %
+% ********************************************************* %
+
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+
+\renewcommand{\chaptermark}[1]{\markboth{\chaptername\ \thechapter.\ #1}{}}
+\renewcommand{\sectionmark}[1]{\markright{\thesection\ #1}}
+
+\fancyhf{}
+
+\fancyhead[L]{\leftmark}
+\fancyfoot[L]{\small{Ciro Juan Brignolo}}
+\fancyfoot[R]{\thepage}
+\renewcommand{\headrulewidth}{0.5pt}
+\renewcommand{\footrulewidth}{0.5pt}
+\setlength{\hoffset}{-0.8in}
+\setlength{\textwidth}{16cm}
+\setlength{\headsep}{0.5cm}
+\setlength{\textheight}{25cm}
+\setlength{\voffset}{-0.7in}
+\setlength{\headwidth}{\textwidth}
+\setlength{\headheight}{13.1pt}
+
+\renewcommand{\baselinestretch}{1.3}  % line spacing (1.3 para tesis)
+
+% ******************************************************** %
+
+\usepackage{titlesec}
+
+\setcounter{secnumdepth}{4}
+\setcounter{tocdepth}{4}
+
+\titleformat{\paragraph}
+{\normalfont\normalsize\bfseries}{\theparagraph}{1em}{}
+\titlespacing*{\paragraph}
+{0pt}{3.25ex plus 1ex minus .2ex}{1.5ex plus .2ex}
+\providecommand{\norm}[1]{\lVert#1\rVert}
+
+% ******************************************************** %
+% ~~~~~~~~         Información de la tesis        ~~~~~~~~~ %
+% ******************************************************** %
+
+\begin{document}
+
+\thispagestyle{empty}
+\materia{Licenciatura en Ciencias de la Computación}
+\submateria{Trabajo Final de Licenciatura}
+\titulo{Testing de Sistemas de Detección de Semáforos mediante Reimplementación}
+\subtitulo{Un Enfoque Basado en Reverse Engineering del Sistema Apollo}
+\integrante{Ciro Juan Brignolo}{707/16}{cirob100@gmail.com}
+% Agregar más integrantes si corresponde:
+% \integrante{Nombre Apellido}{LU}{email@example.com}
+
+\maketitle
+\newpage
+
+% ******************************************************** %
+% ~~~~~~~~              Resumen/Abstract          ~~~~~~~~~ %
+% ******************************************************** %
+
+\thispagestyle{empty}
+\chapter*{Resumen}
+\addcontentsline{toc}{chapter}{Resumen}
+
+Los sistemas de conducción autónoma representan infraestructuras de software complejas que integran múltiples componentes de machine learning. El testing exhaustivo de estos sistemas es fundamental para garantizar su confiabilidad y seguridad, pero la complejidad de los sistemas completos dificulta el diseño de tests específicos y controlados.
+
+Este trabajo presenta una metodología de testing basada en la reimplementación de subsistemas críticos de vehículos autónomos. Como caso de estudio, se realizó el análisis mediante reverse engineering del módulo de detección de semáforos del sistema Apollo de Baidu, seguido de su reimplementación en PyTorch. Esta reimplementación sirvió como plataforma controlada para comprender profundamente el sistema y diseñar tests exploratorios que identificaran debilidades y comportamientos inesperados.
+
+El proceso incluyó: (1) dos aproximaciones de implementación, la primera fallida intentando recortar Apollo y la segunda exitosa mediante reimplementación desde cero, (2) análisis iterativo del código fuente para extraer especificaciones funcionales, (3) validación de equivalencia mediante revisión a nivel código, y (4) descubrimiento de errores de comprensión y diseño de tests basados en el conocimiento interno del sistema.
+
+Los resultados demuestran la viabilidad de este enfoque iterativo para comprender y testear sistemas ML complejos, revelando tanto errores de implementación como decisiones de diseño del sistema original que serían difíciles de descubrir mediante testing de caja negra.
+
+\textbf{Palabras clave:} testing de software, sistemas de conducción autónoma, reverse engineering, oracle-based testing, detección de semáforos, machine learning, Apollo, PyTorch
+
+\newpage
+
+% ******************************************************** %
+% ~~~~~~~~         Tabla de contenidos           ~~~~~~~~~ %
+% ******************************************************** %
+
+\thispagestyle{empty}
+\tableofcontents
+\newpage
+
+% ******************************************************** %
+% ~~~~~~~~         Lista de figuras              ~~~~~~~~~ %
+% ******************************************************** %
+
+\listoffigures
+\newpage
+
+% ******************************************************** %
+% ~~~~~~~~              CAPÍTULOS                ~~~~~~~~~ %
+% ******************************************************** %
+
+\include{chapters/01_introduccion}
+\include{chapters/02_marco_teorico}
+\include{chapters/03_analisis_apollo}
+\include{chapters/04_reimplementacion}
+\include{chapters/05_diseno_tests}
+\include{chapters/06_resultados}
+\include{chapters/07_conclusiones}
+
+% ******************************************************** %
+% ~~~~~~~~            BIBLIOGRAFÍA               ~~~~~~~~~ %
+% ******************************************************** %
+
+\bibliographystyle{plain}
+\bibliography{bibliography/referencias}
+
+% ******************************************************** %
+% ~~~~~~~~              APÉNDICES                ~~~~~~~~~ %
+% ******************************************************** %
+
+\appendix
+\include{chapters/apendice_a}
+
+\end{document}

@@ -1,0 +1,40 @@
+# LaTeX auxiliary files
+*.aux
+*.lof
+*.log
+*.lot
+*.fls
+*.out
+*.toc
+*.fmt
+*.fot
+*.cb
+*.cb2
+.*.lb
+
+# Bibliography
+*.bbl
+*.bcf
+*.blg
+*-blx.aux
+*-blx.bib
+*.run.xml
+
+# Build files
+*.dvi
+*.ps
+*.pdf
+
+# Minted (code highlighting)
+_minted-*
+*.pyg
+
+# Temporary files
+*~
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
