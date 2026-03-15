@@ -167,253 +167,69 @@ cv2.destroyAllWindows()
 \end{verbatim}
 \end{codesnippet}
 
-\section{Scripts de Ejemplo}
+\section{Scripts Principales}
 
-\subsection{Detección en Imagen Individual}
+A continuación se describen los scripts principales utilizados para el flujo de trabajo del sistema.
 
-\begin{codesnippet}
-\begin{verbatim}
-python example.py
-\end{verbatim}
-\end{codesnippet}
-
-Procesa una imagen de ejemplo y muestra resultados.
-
-\subsection{Detección con Tracking}
+\subsection{Extracción de Frames}
 
 \begin{codesnippet}
 \begin{verbatim}
-python example_with_tracking.py
+python frames_extractor.py
 \end{verbatim}
 \end{codesnippet}
 
-Demuestra el uso del módulo de tracking temporal.
-
-\subsection{Procesamiento en Batch}
-
-\begin{codesnippet}
-\begin{verbatim}
-python run_pipeline_batch.py
-\end{verbatim}
-\end{codesnippet}
-
-Procesa múltiples imágenes de forma eficiente.
-
-\subsection{Modo Debug}
-
-\begin{codesnippet}
-\begin{verbatim}
-python run_pipeline_debug.py
-\end{verbatim}
-\end{codesnippet}
-
-Ejecuta el pipeline con salida detallada de debugging y visualizaciones intermedias.
-
-\section{Herramientas Auxiliares}
-
-\subsection{Extracción de Frames de Video}
-
-\textbf{Manual:}
-\begin{codesnippet}
-\begin{verbatim}
-python extract_frames_manual.py --video input.mp4 --output frames/
-\end{verbatim}
-\end{codesnippet}
-
-\textbf{Automática:}
-\begin{codesnippet}
-\begin{verbatim}
-python auto_extraction_of_frames.py --video input.mp4
-\end{verbatim}
-\end{codesnippet}
+Extrae frames de un video para su posterior procesamiento. El video de entrada se selecciona directamente en el código del script, modificando la variable correspondiente al path del archivo de video.
 
 \subsection{Selección de Projection Boxes}
 
-\textbf{Interactiva:}
 \begin{codesnippet}
 \begin{verbatim}
-python select_projection_and_append.py --image frame.jpg
+python select_projection_and_append.py
 \end{verbatim}
 \end{codesnippet}
 
-Permite seleccionar ROIs manualmente con el mouse.
+Herramienta interactiva para seleccionar las projection boxes (ROIs donde se espera encontrar semáforos) manualmente usando el mouse. Las coordenadas seleccionadas se guardan en un archivo de texto para su uso posterior.
 
-\textbf{Programática:}
-\begin{codesnippet}
-\begin{verbatim}
-python projection_boxes_generator.py --config config.json
-\end{verbatim}
-\end{codesnippet}
-
-\section{Ejecución de Tests}
-
-\subsection{Suite Completa de Tests}
+\subsection{Propagación de Projection Boxes}
 
 \begin{codesnippet}
 \begin{verbatim}
-# Ejecutar todos los tests
-pytest tests/
-
-# Con salida verbose
-pytest -v tests/
-
-# Con medición de cobertura
-pytest --cov=src/tlr tests/
+python propagate.py
 \end{verbatim}
 \end{codesnippet}
 
-\subsection{Tests por Categoría}
+Propaga las projection boxes definidas en un frame a todos los frames extraídos del video. Útil cuando las projection boxes son válidas para toda la secuencia de frames.
+
+\subsection{Ejecución del Pipeline}
 
 \begin{codesnippet}
 \begin{verbatim}
-# Solo tests de validación
-pytest tests/validation/
-
-# Solo tests exploratorios
-pytest tests/exploratory/
-
-# Solo tests de propiedades
-pytest tests/properties/
-
-# Solo tests metamórficos
-pytest tests/metamorphic/
+python run_pipeline.py
 \end{verbatim}
 \end{codesnippet}
 
-\subsection{Tests Específicos}
-
-\begin{codesnippet}
-\begin{verbatim}
-# Test específico de módulo
-pytest tests/validation/test_detection.py
-
-# Test específico de función
-pytest tests/validation/test_detection.py::test_nms_basic
-\end{verbatim}
-\end{codesnippet}
-
-\section{Configuración}
-
-\subsection{Archivos de Configuración}
-
-Los modelos usan archivos de configuración en \texttt{src/tlr/confs/}:
-
-\begin{verbatim}
-src/tlr/confs/
-├── detector_config.json     # Configuración del detector
-├── hori_config.json         # Clasificador horizontal
-├── vert_config.json         # Clasificador vertical
-└── quad_config.json         # Clasificador quad
-\end{verbatim}
-
-\subsection{Modificar Parámetros}
-
-Ejemplo de modificación de parámetros:
-
-\begin{codesnippet}
-\begin{verbatim}
-{
-  "crop_scale": 2.5,
-  "min_crop_size": 270,
-  "nms_threshold": 0.6,
-  "confidence_threshold": 0.3,
-  "means_detector": [102.98, 115.95, 122.77],
-  "means_recognizer": [66.56, 66.58, 69.06]
-}
-\end{verbatim}
-\end{codesnippet}
-
-\section{Solución de Problemas}
-
-\subsection{CUDA Out of Memory}
-
-Si encuentra errores de memoria en GPU:
-
-\begin{itemize}
-    \item Reducir el tamaño de batch (si procesa múltiples imágenes)
-    \item Procesar imágenes de menor resolución
-    \item Usar CPU en lugar de GPU: \texttt{load\_pipeline('cpu')}
-\end{itemize}
-
-\subsection{Rendimiento Bajo en CPU}
-
-El sistema está optimizado para GPU. En CPU:
-
-\begin{itemize}
-    \item Espere tiempos de procesamiento más lentos (5-10x)
-    \item Considere procesar en batch para amortizar overhead
-    \item Reduzca resolución de entrada si es posible
-\end{itemize}
-
-\subsection{Errores de OpenCV}
-
-Si hay conflictos con OpenCV:
-
-\begin{codesnippet}
-\begin{verbatim}
-pip uninstall opencv-python opencv-contrib-python
-pip install opencv-python==4.5.5.64
-\end{verbatim}
-\end{codesnippet}
-
-\subsection{Modelos No Encontrados}
-
-Si falta algún archivo de modelo:
-
-\begin{codesnippet}
-\begin{verbatim}
-# Verificar que existen los modelos
-ls src/tlr/weights/
-
-# Deberían estar:
-# - tl.torch
-# - hori.torch
-# - vert.torch
-# - quad.torch
-\end{verbatim}
-\end{codesnippet}
+Ejecuta el pipeline completo de detección de semáforos sobre los frames extraídos, utilizando las projection boxes definidas. Genera los resultados de detección y clasificación para cada frame.
 
 \section{Estructura de Directorios del Proyecto}
 
 \begin{verbatim}
 TrafficLightDetection/
-├── src/
-│   └── tlr/
-│       ├── pipeline.py           # Pipeline principal
-│       ├── detector.py           # Detector de semáforos
-│       ├── recognizer.py         # Clasificadores
-│       ├── tracking.py           # Tracking temporal
-│       ├── selector.py           # Asignación húngara
-│       ├── hungarian_optimizer.py
-│       ├── utils.py              # Utilidades
-│       ├── weights/              # Modelos pre-entrenados
-│       └── confs/                # Configuraciones
-├── tests/
-│   ├── validation/               # Tests oracle-based
-│   ├── properties/               # Tests basados en propiedades
-│   ├── exploratory/              # Tests exploratorios
-│   └── metamorphic/              # Tests metamórficos
-├── inputTesis/                   # Videos de entrada
-├── frames_labeled/               # Frames con ground truth
-├── frames_auto_labeled/          # Frames auto-etiquetados
-├── examples/                     # Outputs de ejemplo
-├── docs/                         # Documentación
-│   ├── tesis/                    # Documentos de la tesis
-│   └── ...
-├── example.py                    # Script de ejemplo básico
-├── example_with_tracking.py      # Ejemplo con tracking
-├── run_pipeline_batch.py         # Procesamiento en batch
-├── run_pipeline_debug.py         # Modo debug
-├── requirements.txt              # Dependencias
-└── README.md                     # Readme del proyecto
++-- src/
+|   +-- tlr/
+|       +-- pipeline.py           # Pipeline principal
+|       +-- detector.py           # Detector de semaforos
+|       +-- recognizer.py         # Clasificadores
+|       +-- tracking.py           # Tracking temporal
+|       +-- selector.py           # Asignacion hungara
+|       +-- hungarian_optimizer.py
+|       +-- utils.py              # Utilidades
+|       +-- weights/              # Modelos pre-entrenados
+|       +-- confs/                # Configuraciones
++-- inputTesis/                   # Videos de entrada
++-- docs/                         # Documentacion
+|   +-- tesis/                    # Documentos de la tesis
+|   +-- ...
++-- requirements.txt              # Dependencias
++-- README.md                     # Readme del proyecto
 \end{verbatim}
-
-\section{Contacto y Soporte}
-
-Para preguntas, issues o contribuciones:
-
-\begin{itemize}
-    \item \textbf{Repositorio:} [URL DEL REPOSITORIO]
-    \item \textbf{Issues:} [URL DE ISSUES]
-    \item \textbf{Email:} cirob100@gmail.com
-\end{itemize}

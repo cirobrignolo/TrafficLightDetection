@@ -27,7 +27,7 @@ print(f"   Duración: {duration:.2f}s")
 
 # CONFIGURACIÓN PARA PRUEBAS: Extraer 1 de cada 5 frames (reduce cantidad para testing)
 # Para producción: usar frame_interval = 1 (todos los frames)
-frame_interval = 5
+frame_interval = 4
 
 print(f"📸 Guardando 1 frame cada {frame_interval} frames (modo pruebas)")
 print(f"📈 Frames estimados: ~{total_frames // frame_interval}")

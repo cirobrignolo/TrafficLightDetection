@@ -1,290 +1,129 @@
-\chapter{Análisis del Sistema Apollo}
+\chapter{Análisis del Sistema}
 \label{cap:analisis_apollo}
 
-Este capítulo describe el proceso de reverse engineering aplicado al módulo de detección de semáforos de Apollo, desde la decisión inicial de trabajar con este sistema hasta la extracción completa de las especificaciones funcionales.
+Este capítulo describe el proceso de análisis del sistema Apollo que realizamos para comprender el módulo TLR y tomar decisiones informadas sobre cómo recortarlo y reimplementarlo.
 
-\section{Selección del Sistema de Referencia}
+\section{Preguntas de Análisis}
 
-\subsection{Contexto: El Paper de FSE 2020}
-
-El punto de partida de este trabajo fue el paper ``A First Look at the Integration of Machine Learning Models in Complex Autonomous Driving Systems'' presentado en FSE 2020 \cite{peng2020first}. Este trabajo analiza cómo se integran los modelos de ML en Apollo, identificando:
-
-\begin{itemize}
-    \item Patrones de integración entre componentes
-    \item Desafíos en el testing y validación
-    \item Oportunidades para mejorar la modularidad
-\end{itemize}
-
-\textbf{Idea clave:} Los sistemas monolíticos dificultan el testing controlado de componentes individuales. Extraer subsistemas permitiría diseñar tests más específicos.
-
-\subsection{Evaluación de Subsistemas}
-
-Se evaluaron dos candidatos principales:
-
-\begin{table}[H]
-\centering
-\begin{tabular}{|l|p{5cm}|p{5cm}|}
-\hline
-\textbf{Criterio} & \textbf{Detección de Semáforos} & \textbf{Detección de Obstáculos} \\
-\hline
-Sensores & Solo cámaras & Cámaras + LiDAR + Radar \\
-\hline
-Complejidad & Media & Alta \\
-\hline
-Reproducibilidad de tests & Alta (videos/imágenes) & Baja (requiere datos LiDAR) \\
-\hline
-Criticidad & Alta & Muy alta \\
-\hline
-Auto-contenido & Alto & Medio (depende de fusión) \\
-\hline
-\end{tabular}
-\caption{Comparación de subsistemas candidatos}
-\end{table}
-
-\textbf{Decisión:} Se eligió el módulo de detección de semáforos por:
+El análisis estuvo guiado por cuatro preguntas fundamentales:
 
 \begin{enumerate}
-    \item \textbf{Simplicidad de testing:} Solo requiere imágenes/video como entrada
-    \item \textbf{No requiere LiDAR:} Los sensores LiDAR son difíciles de simular
-    \item \textbf{Interfaces claras:} Input (imagen + projection boxes) → Output (detecciones + estados)
-    \item \textbf{Criticidad suficiente:} Componente de seguridad importante
+    \item \textbf{¿Cuál es el alcance funcional del módulo TLR?} \\
+    ¿Qué hace exactamente? ¿Cuáles son sus entradas y salidas? ¿De qué otros módulos depende?
+
+    \item \textbf{¿Qué partes del código son esenciales y cuáles son accesorias?} \\
+    ¿Qué es la lógica core del TLR y qué es infraestructura de Apollo (CyberRT, Bazel, etc.)?
+
+    \item \textbf{¿Qué parámetros y reglas de decisión utiliza el sistema?} \\
+    ¿Cuáles son los thresholds, pesos, y reglas de negocio que determinan el comportamiento?
+
+    \item \textbf{¿Qué simplificaciones podemos hacer sin afectar la lógica core?} \\
+    ¿Qué dependencias podemos eliminar manteniendo equivalencia funcional?
 \end{enumerate}
 
-\section{Primer Enfoque: Recortar Apollo Original}
+\section{Proceso de Análisis}
 
-\subsection{Estrategia Inicial}
+\subsection{Análisis Estático del Código}
 
-La primera aproximación fue intentar aislar el módulo TLR del código completo de Apollo:
+Examinamos el código fuente C++ de Apollo sin ejecutarlo para extraer:
+
+\subsubsection{Estructura del Pipeline}
+
+Identificamos 5 etapas principales:
 
 \begin{enumerate}
-    \item Clonar el repositorio completo de Apollo
-    \item Identificar el módulo de percepción de semáforos
-    \item Eliminar progresivamente dependencias innecesarias
-    \item Mantener solo el código esencial para TLR
+    \item \textbf{Preprocessing:} Expansión de ROIs (projection boxes → crops)
+    \item \textbf{Detection:} Red CNN para detectar semáforos en los crops
+    \item \textbf{Assignment:} Algoritmo húngaro para asignar detecciones a projection boxes
+    \item \textbf{Recognition:} Clasificadores para determinar el color de cada detección
+    \item \textbf{Tracking:} Mantenimiento de estados temporales con reglas de seguridad
 \end{enumerate}
 
-\subsection{Problemas Encontrados}
+\subsubsection{Parámetros Numéricos Extraídos}
 
-Este enfoque resultó inviable por múltiples razones:
-
-\subsubsection{Complejidad del Sistema}
-
-\begin{itemize}
-    \item \textbf{Tamaño del código:} Millones de líneas de código C++
-    \item \textbf{Dependencias profundas:} El módulo TLR dependía de:
-    \begin{itemize}
-        \item Framework CyberRT (sistema de mensajería propio de Apollo)
-        \item Librerías de utilidades internas
-        \item Configuraciones específicas del ecosistema Apollo
-    \end{itemize}
-\end{itemize}
-
-\subsubsection{Requisitos de Configuración}
-
-Apollo requiere una configuración extensa y específica (ver Tabla \ref{tab:apollo_requirements}):
-
-\begin{table}[H]
-\centering
-\begin{tabular}{|l|l|}
-\hline
-\textbf{Componente} & \textbf{Requisito} \\
-\hline
-CPU & 8+ cores \\
-RAM & 16 GB \\
-GPU & NVIDIA RTX 20xx+ \\
-OS & Ubuntu 18.04/20.04/22.04 \\
-CUDA & 11.8 \\
-Docker & $\geq$ 19.03 \\
-Espacio disco & $\sim$50 GB \\
-\hline
-\end{tabular}
-\caption{Requisitos de hardware/software de Apollo}
-\label{tab:apollo_requirements}
-\end{table}
-
-\subsubsection{Proceso de Compilación Complejo}
-
-% TODO: Agregar diagrama del proceso de build de Apollo
-
-La compilación de Apollo involucra:
-\begin{enumerate}
-    \item Descargar imagen Docker ($\sim$15 GB)
-    \item Configurar container con NVIDIA runtime
-    \item Compilar todo el sistema (30+ minutos)
-    \item Resolver dependencias de Bazel
-\end{enumerate}
-
-\subsection{Conclusión del Primer Enfoque}
-
-Intentar aislar el módulo TLR manteniendo el código original era:
-\begin{itemize}
-    \item \textbf{Técnicamente complejo:} Requería entender todo el framework CyberRT
-    \item \textbf{Poco práctico:} Alta barrera de entrada para testing
-    \item \textbf{Difícil de mantener:} Cualquier cambio en Apollo rompería la extracción
-\end{itemize}
-
-\textbf{Decisión:} Cambiar de estrategia a reimplementación desde cero.
-
-\section{Segundo Enfoque: Reverse Engineering y Reimplementación}
-
-\subsection{Nueva Estrategia}
-
-En lugar de recortar el código existente, decidimos:
-
-\begin{enumerate}
-    \item \textbf{Analizar} el código de Apollo para entender su funcionamiento
-    \item \textbf{Extraer} las especificaciones funcionales
-    \item \textbf{Reimplementar} desde cero en PyTorch
-    \item \textbf{Validar} equivalencia funcional
-\end{enumerate}
-
-Ventajas de este enfoque:
-\begin{itemize}
-    \item Control total sobre el código
-    \item Dependencias mínimas
-    \item Código más simple y entendible
-    \item Facilita instrumentación para testing
-\end{itemize}
-
-\section{Proceso de Reverse Engineering}
-
-\subsection{Análisis de Alto Nivel}
-
-\subsubsection{Identificación del Pipeline}
-
-El primer paso fue mapear el flujo completo del sistema:
-
-\begin{figure}[H]
-\centering
-% TODO: Agregar diagrama del pipeline completo
-\caption{Pipeline de detección de semáforos en Apollo}
-\label{fig:apollo_pipeline}
-\end{figure}
-
-Etapas identificadas:
-\begin{enumerate}
-    \item \textbf{Preprocessing:} Obtención de ROIs y expansión de crops
-    \item \textbf{Detection:} Red CNN para detectar semáforos
-    \item \textbf{Assignment:} Algoritmo húngaro para asignar detecciones
-    \item \textbf{Recognition:} Clasificadores especializados por orientación
-    \item \textbf{Tracking:} Mantenimiento temporal de estados
-\end{enumerate}
-
-\subsubsection{Ubicación del Código}
-
-Archivos principales del módulo TLR en Apollo:
-
-\begin{verbatim}
-modules/perception/onboard/component/
-    traffic_light_region_proposal_component.cc
-modules/perception/traffic_light_recognition/
-    detector/detection/
-        cropbox.cc              # Expansión de ROIs
-        select.cc               # Algoritmo húngaro
-    detector/recognition/
-        classify.cc             # Clasificadores
-        recognition.cc          # Lógica de reconocimiento
-    tracker/
-        semantic_decision.cc    # Tracking temporal
-\end{verbatim}
-
-\subsection{Extracción de Parámetros}
-
-Se realizó un análisis sistemático del código para extraer todos los parámetros numéricos:
-
-\subsubsection{Preprocessing}
+\textbf{Preprocessing:}
 
 \begin{table}[H]
 \centering
 \begin{tabular}{|l|c|l|}
 \hline
-\textbf{Parámetro} & \textbf{Valor} & \textbf{Archivo (línea)} \\
+\textbf{Parámetro} & \textbf{Valor} & \textbf{Archivo} \\
 \hline
-\texttt{crop\_scale} & 2.5 & cropbox.cc:28 \\
-\texttt{min\_crop\_size} & 270 & cropbox.cc:29 \\
-\texttt{mean\_b\_detector} & 102.98 & detection.cc:125 \\
-\texttt{mean\_g\_detector} & 115.95 & detection.cc:126 \\
-\texttt{mean\_r\_detector} & 122.77 & detection.cc:127 \\
+\texttt{crop\_scale} & 2.5 & cropbox.cc \\
+\texttt{min\_crop\_size} & 270 & cropbox.cc \\
+\texttt{mean\_b\_detector} & 102.98 & detection.cc \\
+\texttt{mean\_g\_detector} & 115.95 & detection.cc \\
+\texttt{mean\_r\_detector} & 122.77 & detection.cc \\
 \hline
 \end{tabular}
 \caption{Parámetros de preprocessing}
 \end{table}
 
-\subsubsection{Detection}
+\textbf{Detection:}
 
 \begin{itemize}
-    \item Input size: 270×270 (detection.cc:134)
-    \item NMS threshold: 0.6 (detection.cc:401)
-    \item Confidence threshold: No explícito (se acepta todo $>$ 0)
+    \item Input size: 270×270
+    \item NMS threshold: 0.6
 \end{itemize}
 
-\subsubsection{Assignment (Hungarian)}
+\textbf{Assignment (Hungarian):}
 
 \begin{table}[H]
 \centering
 \begin{tabular}{|l|c|l|}
 \hline
-\textbf{Parámetro} & \textbf{Valor} & \textbf{Archivo (línea)} \\
+\textbf{Parámetro} & \textbf{Valor} & \textbf{Archivo} \\
 \hline
-\texttt{distance\_weight} & 0.7 & select.cc:71 \\
-\texttt{confidence\_weight} & 0.3 & select.cc:71 \\
-\texttt{gaussian\_sigma\_x} & 100.0 & select.cc:58 \\
-\texttt{gaussian\_sigma\_y} & 100.0 & select.cc:58 \\
-\texttt{max\_detection\_score} & 0.9 & select.cc:60 \\
+\texttt{distance\_weight} & 0.7 & select.cc \\
+\texttt{confidence\_weight} & 0.3 & select.cc \\
+\texttt{gaussian\_sigma} & 100.0 & select.cc \\
+\texttt{max\_detection\_score} & 0.9 & select.cc \\
 \hline
 \end{tabular}
 \caption{Parámetros del algoritmo húngaro}
 \end{table}
 
-\subsubsection{Recognition}
+\textbf{Recognition:}
 
 \begin{table}[H]
 \centering
-\begin{tabular}{|l|c|c|l|}
+\begin{tabular}{|l|c|c|}
 \hline
-\textbf{Clasificador} & \textbf{Input Shape} & \textbf{Threshold} & \textbf{Archivo} \\
+\textbf{Clasificador} & \textbf{Input Shape} & \textbf{Threshold} \\
 \hline
-Vertical & 96×32 & 0.5 & recognition.cc:52 \\
-Horizontal & 32×96 & 0.5 & recognition.cc:52 \\
-Quad & 64×64 & 0.5 & recognition.cc:52 \\
+Vertical & 96×32 & 0.5 \\
+Horizontal & 32×96 & 0.5 \\
+Quad & 64×64 & 0.5 \\
 \hline
 \end{tabular}
 \caption{Parámetros de clasificadores}
 \end{table}
 
-Normalización para reconocimiento:
-\begin{itemize}
-    \item Mean BGR: [66.56, 66.58, 69.06] (classify.cc:45)
-    \item Scale factor: 0.01 (classify.cc:48)
-\end{itemize}
-
-\subsubsection{Tracking}
+\textbf{Tracking:}
 
 \begin{table}[H]
 \centering
 \begin{tabular}{|l|c|l|}
 \hline
-\textbf{Parámetro} & \textbf{Valor} & \textbf{Archivo (línea)} \\
+\textbf{Parámetro} & \textbf{Valor} & \textbf{Archivo} \\
 \hline
-\texttt{revise\_time\_s} & 1.5 & semantic\_decision.cc:34 \\
-\texttt{blink\_threshold\_s} & 0.55 & semantic\_decision.cc:35 \\
-\texttt{hysteretic\_threshold} & 1 & semantic\_decision.cc:36 \\
+\texttt{revise\_time\_s} & 1.5 & semantic\_decision.cc \\
+\texttt{blink\_threshold\_s} & 0.55 & semantic\_decision.cc \\
+\texttt{hysteretic\_threshold} & 1 & semantic\_decision.cc \\
 \hline
 \end{tabular}
 \caption{Parámetros de tracking temporal}
 \end{table}
 
-\subsection{Extracción de Lógica de Negocio}
+\subsubsection{Reglas de Negocio del Tracking}
 
-\subsubsection{Reglas de Tracking Temporal}
-
-Se identificaron 5 reglas principales de seguridad:
+Identificamos 4 reglas principales de seguridad en el código de tracking:
 
 \textbf{Regla 1: YELLOW después de RED → Mantener RED}
 
-Código en Apollo (semantic\_decision.cc:145-149):
 \begin{codesnippet}
 \begin{verbatim}
+// semantic_decision.cc:145
 if (color == YELLOW && iter->color == RED) {
     ReviseLights(lights, iter->color);
     // Mantiene RED por seguridad
@@ -292,115 +131,142 @@ if (color == YELLOW && iter->color == RED) {
 \end{verbatim}
 \end{codesnippet}
 
-\textbf{Justificación (según comentarios en código):}
-\begin{quote}
-``Because of the time sequence, yellow only exists after green and before red. Any yellow after red is reset to red for the sake of safety until green displays.''
-\end{quote}
+Justificación en comentario del código: ``Yellow only exists after green and before red. Any yellow after red is reset to red for the sake of safety.''
 
 \textbf{Regla 2: BLACK cuando estaba encendido → Mantener color anterior}
 
-Apollo mantiene el último color conocido cuando detecta BLACK (apagado), asumiendo que es una detección errónea temporal.
+El sistema mantiene el último color conocido cuando detecta BLACK, asumiendo que es una detección errónea temporal.
 
-\textbf{Regla 3: Detección de Blink (parpadeo)}
+\textbf{Regla 3: Detección de Blink}
 
-El sistema detecta el patrón BRIGHT → DARK (> 0.55s) → BRIGHT como indicador de semáforo parpadeante.
+El sistema detecta parpadeo solo en verde: patrón BRIGHT → DARK ($>$0.55s) → BRIGHT.
 
 \textbf{Regla 4: Reset después de 1.5s}
 
-Si pasan más de 1.5 segundos sin ver un semáforo, se resetea su historial y se acepta la siguiente detección sin validación.
-
-\textbf{Regla 5: Hysteretic threshold}
-
-Se requiere al menos 1 frame de confirmación antes de cambiar de estado.
-
-\subsection{Análisis de la Arquitectura CNN}
-
-\subsubsection{Detector}
-
-El detector utiliza una arquitectura basada en Faster R-CNN con modificaciones:
-
-\begin{itemize}
-    \item \textbf{Backbone:} Red tipo VGG con capas convolucionales
-    \item \textbf{RPN:} Region Proposal Network modificado (RPNProposalSSD)
-    \item \textbf{ROI Pooling:} Deformable PSROIAlign
-    \item \textbf{Output:} 8 valores por detección [bg, vert, quad, hori scores + 4 coords]
-\end{itemize}
-
-\subsubsection{Clasificadores}
-
-Tres redes CNN independientes, una por orientación:
-
-\begin{itemize}
-    \item Arquitectura similar: Conv layers + FC layers
-    \item Output: 4 clases [BLACK, RED, YELLOW, GREEN]
-    \item Activación final: Softmax
-\end{itemize}
-
-\subsection{Conversión de Modelos}
-
-\subsubsection{Formato Original: Caffe}
-
-Apollo utiliza modelos en formato Caffe (.caffemodel):
-\begin{itemize}
-    \item Definición de arquitectura en .prototxt
-    \item Pesos en formato binario .caffemodel
-\end{itemize}
-
-\subsubsection{Proceso de Conversión a PyTorch}
-
-\begin{enumerate}
-    \item \textbf{Parsear prototxt:} Extraer definición de capas
-    \item \textbf{Mapear arquitectura:} Crear modelo equivalente en PyTorch
-    \item \textbf{Cargar pesos:} Leer .caffemodel y convertir formato
-    \item \textbf{Validar equivalencia:} Comparar outputs con misma entrada
-\end{enumerate}
-
-Herramientas utilizadas:
-\begin{itemize}
-    \item Scripts propios de conversión
-    \item Validación numérica capa por capa
-\end{itemize}
-
-\section{Documentación Extraída}
-
-El resultado del proceso de reverse engineering fue:
-
-\begin{enumerate}
-    \item \textbf{Tabla completa de parámetros:} Todos los valores numéricos documentados
-    \item \textbf{Especificación de reglas de negocio:} Lógica de tracking y seguridad
-    \item \textbf{Arquitecturas de redes:} Estructuras completas de los modelos
-    \item \textbf{Flujo de datos:} Diagramas del pipeline completo
-    \item \textbf{Casos especiales:} Condiciones de borde y manejo de errores
-\end{enumerate}
-
-Esta documentación sirvió como especificación funcional para la reimplementación.
+Si pasan más de 1.5 segundos sin ver un semáforo, se resetea su historial.
 
 \section{Hallazgos del Análisis}
 
-\subsection{Complejidades Inesperadas}
+\subsection{Hallazgo 1: Dos Tipos de IDs}
+
+Descubrimos que Apollo maneja dos tipos distintos de identificadores:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|p{5cm}|p{5cm}|}
+\hline
+\textbf{Tipo} & \textbf{Origen} & \textbf{Persistencia} \\
+\hline
+\textbf{Signal ID} & HD-Map (coordenadas 3D del mundo) & Permanente \\
+\hline
+\textbf{Detection ID} & Asignado durante detección & Solo válido para el frame actual \\
+\hline
+\end{tabular}
+\caption{Diferencias entre tipos de IDs}
+\end{table}
+
+\textbf{Implicación:} El tracking se basa en el Signal ID, no en la posición en píxeles. Esto significa que mover un semáforo en la imagen no confunde al sistema porque la identidad viene del HD-Map.
+
+\subsection{Hallazgo 2: Semantic ID No Implementado}
+
+Durante el análisis encontramos código diseñado pero no implementado:
+
+\begin{codesnippet}
+\begin{verbatim}
+// traffic_light/region_proposal_component.cc:335
+int cur_semantic = 0;  // Siempre 0, hardcodeado
+for (auto& light : lights) {
+    light->semantic = cur_semantic;
+}
+\end{verbatim}
+\end{codesnippet}
+
+El semantic\_id debería agrupar semáforos de la misma intersección para aplicar voting, pero está siempre asignado a 0. El código de voting existe pero nunca se ejecuta.
+
+\textbf{Implicación:} Todos los semáforos se tratan independientemente, sin corrección por consistencia entre semáforos del mismo cruce.
+
+\subsection{Hallazgo 3: Dependencia Crítica del HD-Map}
+
+El HD-Map no solo provee las projection boxes, sino que es fundamental para:
 
 \begin{itemize}
-    \item \textbf{Triple NMS:} Se aplica NMS en tres etapas diferentes (RPN, RCNN, Global)
-    \item \textbf{Ordenamiento particular:} El NMS global ordena ascendente pero procesa desde atrás
-    \item \textbf{Penalizaciones en hungarian:} Detecciones fuera del crop tienen costo 0
-    \item \textbf{Clipping de scores:} Los scores de detección se limitan a máximo 0.9
+    \item Identificar persistentemente cada semáforo (Signal ID)
+    \item Aplicar reglas de tracking correctamente
+    \item Limitar la búsqueda a regiones conocidas
 \end{itemize}
 
-\subsection{Decisiones de Diseño Interesantes}
+\textbf{Implicación para el recorte:} No podemos reimplementar el HD-Map dinámico, pero podemos simular su función usando projection boxes pre-calculadas manualmente.
+
+\section{Decisiones Informadas por el Análisis}
+
+Los hallazgos del análisis informaron las siguientes decisiones de recorte:
+
+\subsection{Alcance Funcional}
+
+\textbf{Incluir:}
+\begin{itemize}
+    \item Las 5 etapas del pipeline (preprocessing, detection, assignment, recognition, tracking)
+    \item Los 4 modelos de red neuronal (detector + 3 clasificadores)
+    \item Todas las reglas de tracking temporal
+    \item Todos los parámetros numéricos extraídos
+\end{itemize}
+
+\textbf{Excluir:}
+\begin{itemize}
+    \item CyberRT (framework de mensajería)
+    \item Integración con HD-Map dinámico
+    \item Integración con otros módulos de Apollo
+    \item Infraestructura de Docker/Bazel
+\end{itemize}
+
+\subsection{Decisiones de Interfaz}
+
+\textbf{Entrada original (Apollo):}
+\begin{itemize}
+    \item Imagen de cámara (vía CyberRT)
+    \item Projection boxes del HD-Map (dinámicas, calculadas en tiempo real)
+\end{itemize}
+
+\textbf{Entrada simplificada (reimplementación):}
+\begin{itemize}
+    \item Imagen de cámara (archivo o frame de video)
+    \item Projection boxes pre-calculadas (archivo de texto)
+\end{itemize}
+
+\textbf{Justificación:} Desde el punto de vista del módulo TLR, ambas interfaces producen el mismo input: una lista de bounding boxes donde buscar semáforos. La simplificación no afecta la lógica core.
+
+\textbf{Salida:} Se mantiene igual: lista de detecciones con bounding boxes, colores, y IDs de tracking.
+
+\subsection{Criterio de Conformidad}
+
+Definimos que el recorte es ``equivalente'' al original si:
+
+\begin{enumerate}
+    \item \textbf{Mismos parámetros:} Todos los valores numéricos coinciden exactamente
+    \item \textbf{Misma lógica:} El código implementa exactamente las mismas operaciones en el mismo orden
+    \item \textbf{Mismas reglas:} Las reglas de tracking y seguridad se aplican idénticamente
+    \item \textbf{Mismos edge cases:} Los casos límite se manejan de la misma manera
+\end{enumerate}
+
+\textbf{Nota importante:} No podemos validar la equivalencia ejecutando ambos sistemas en paralelo debido a la complejidad de configurar Apollo. La equivalencia se garantiza ``por construcción'': reimplementando directamente del código fuente.
+
+\section{Resumen}
+
+El análisis del sistema Apollo reveló:
+
+\begin{enumerate}
+    \item \textbf{Estructura del pipeline:} 5 etapas claramente definidas
+    \item \textbf{Parámetros:} Todos los valores numéricos necesarios para reimplementar
+    \item \textbf{Reglas de negocio:} Lógica de tracking y seguridad
+    \item \textbf{Decisiones de diseño:} Dos tipos de IDs, semantic\_id no implementado
+\end{enumerate}
+
+Este conocimiento permitió definir:
 
 \begin{itemize}
-    \item \textbf{Clasificadores especializados:} Un modelo diferente por orientación del semáforo
-    \item \textbf{Enfoque basado en proyecciones:} No se busca en toda la imagen, solo en ROIs conocidos
-    \item \textbf{Reglas conservadoras:} Sesgo hacia mantener RED en casos ambiguos
+    \item El alcance funcional del recorte
+    \item Las simplificaciones de interfaz aceptables
+    \item El criterio para validar equivalencia
 \end{itemize}
 
-\subsection{Áreas Sin Documentar}
-
-Algunos aspectos del código original carecían de documentación clara:
-\begin{itemize}
-    \item Justificación de valores específicos de parámetros
-    \item Criterios de diseño para thresholds
-    \item Casos de test utilizados durante desarrollo
-\end{itemize}
-
-Este análisis motivó la necesidad de diseñar una suite exhaustiva de tests para la reimplementación.
+El siguiente capítulo describe el proceso de reimplementación basado en estas decisiones.

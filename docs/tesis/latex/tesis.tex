@@ -25,14 +25,17 @@
 \usepackage{float}
 \usepackage{pgfplots}
 \usepackage{algorithm}
-\usepackage{algorithmic}
 \usepackage{algpseudocode}
 \usepackage{verbatim}
 \usepackage{forest,adjustbox}
 
+% Para diagramas de pipelines
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows, positioning, calc}
+
 \usepackage{amsmath, amsthm, amssymb}
 
-\usepackage{underscore}
+% \usepackage{underscore}  % Comentado - conflicto con caratula
 \usepackage{caratula}
 \usepackage{hyperref}
 
@@ -61,7 +64,7 @@
 		\vspace{-0.4cm}\colorbox{litegrey}{\TheSbox}\end{center}\vspace{0.3cm}}
 
 % Para código Python con syntax highlighting
-\usepackage{minted}
+% \usepackage{minted}  % Comentado temporalmente - requiere -shell-escape
 
 % ********************************************************* %
 % ~~~~~~~~         Formato de las páginas         ~~~~~~~~~ %
@@ -110,13 +113,12 @@
 \begin{document}
 
 \thispagestyle{empty}
-\materia{Licenciatura en Ciencias de la Computación}
+\materia{Licenciatura en Ciencias de la Computaci\'on}
 \submateria{Trabajo Final de Licenciatura}
-\titulo{Testing de Sistemas de Detección de Semáforos mediante Reimplementación}
+\titulo{Testing de Sistemas de Detecci\'on de Sem\'aforos mediante Reimplementaci\'on}
 \subtitulo{Un Enfoque Basado en Reverse Engineering del Sistema Apollo}
+\fecha{2025}
 \integrante{Ciro Juan Brignolo}{707/16}{cirob100@gmail.com}
-% Agregar más integrantes si corresponde:
-% \integrante{Nombre Apellido}{LU}{email@example.com}
 
 \maketitle
 \newpage
@@ -181,5 +183,6 @@ Los resultados demuestran la viabilidad de este enfoque iterativo para comprende
 
 \appendix
 \include{chapters/apendice_a}
+\include{appendices/apendice_b}
 
 \end{document}

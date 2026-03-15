@@ -1,0 +1,223 @@
+% Diagramas de comparacion de pipelines
+% Para usar en el capitulo 4 de la tesis
+
+% IMPORTANTE: Desactivar shorthand de babel para que TikZ funcione
+\shorthandoff{<>}
+
+% ============================================================
+% DIAGRAMA 1: PIPELINE APOLLO ORIGINAL
+% ============================================================
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=0.8cm,
+    box/.style={rectangle, draw, rounded corners, minimum width=3cm, minimum height=0.8cm, align=center, font=\small},
+    inputbox/.style={box, fill=blue!15},
+    procbox/.style={box, fill=orange!20},
+    outputbox/.style={box, fill=green!15},
+    arrow/.style={->, thick, >=stealth}
+]
+
+% Inputs
+\node[inputbox] (img) {Imagen de Camara};
+\node[inputbox, right=0.5cm of img] (hdmap) {HD-Map\\(Coords 3D)};
+\node[inputbox, right=0.5cm of hdmap] (pose) {Pose Vehiculo\\(GPS + TF)};
+\node[inputbox, right=0.5cm of pose] (calib) {Calibracion\\Camara};
+
+% Etapas
+\node[procbox, below=1.8cm of hdmap, xshift=0.5cm] (prep) {\textbf{Region Proposal}\\Query HD-Map, Proyeccion 3D a 2D};
+
+\node[procbox, below=0.8cm of prep] (detect) {\textbf{Detection}\\CNN SSD-style + NMS};
+
+\node[procbox, below=0.8cm of detect] (select) {\textbf{Assignment}\\Algoritmo Hungaro\\(70\% dist, 30\% conf)};
+
+\node[procbox, below=0.8cm of select] (recog) {\textbf{Recognition}\\3 Clasificadores CNN\\(vert/quad/hori)};
+
+\node[procbox, below=0.8cm of recog] (track) {\textbf{Tracking}\\Reglas temporales\\+ Semantic Voting};
+
+% Output
+\node[outputbox, below=0.8cm of track] (output) {\textbf{Output}\\Color + Blink + Signal ID};
+
+% Coordenada para la linea horizontal comun
+\coordinate (linea_comun) at ($(img.south)+(0,-0.5)$);
+
+% Arrows inputs - todas bajan a la misma altura y luego van al centro
+\draw[arrow] (img.south) -- (img.south |- linea_comun) -| (prep.north);
+\draw[arrow] (hdmap.south) -- (hdmap.south |- linea_comun) -- (prep.north |- linea_comun) -- (prep.north);
+\draw[arrow] (pose.south) -- (pose.south |- linea_comun) -| (prep.north);
+\draw[arrow] (calib.south) -- (calib.south |- linea_comun) -| (prep.north);
+
+% Arrows between stages
+\draw[arrow] (prep) -- (detect);
+\draw[arrow] (detect) -- (select);
+\draw[arrow] (select) -- (recog);
+\draw[arrow] (recog) -- (track);
+\draw[arrow] (track) -- (output);
+
+% Modulos Apollo
+\node[right=0.3cm of prep, font=\tiny\ttfamily, text=gray] {traffic\_light\_region\_proposal};
+\node[right=0.3cm of detect, font=\tiny\ttfamily, text=gray] {traffic\_light\_detection};
+\node[right=0.3cm of select, font=\tiny\ttfamily, text=gray] {traffic\_light\_detection};
+\node[right=0.3cm of recog, font=\tiny\ttfamily, text=gray] {traffic\_light\_recognition};
+\node[right=0.3cm of track, font=\tiny\ttfamily, text=gray] {traffic\_light\_tracking};
+
+\end{tikzpicture}
+\caption{Pipeline de Apollo original con los 4 modulos}
+\label{fig:pipeline_apollo}
+\end{figure}
+
+
+% ============================================================
+% DIAGRAMA 2: PIPELINE REIMPLEMENTACION
+% ============================================================
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=0.8cm,
+    box/.style={rectangle, draw, rounded corners, minimum width=3cm, minimum height=0.8cm, align=center, font=\small},
+    inputbox/.style={box, fill=blue!15},
+    procbox/.style={box, fill=orange!20},
+    outputbox/.style={box, fill=green!15},
+    simplebox/.style={box, fill=yellow!20, dashed},
+    arrow/.style={->, thick, >=stealth}
+]
+
+% Inputs (simplificados)
+\node[inputbox] (img) {Imagen de Camara};
+\node[simplebox, right=1cm of img] (boxes) {Projection Boxes\\(archivo .txt)};
+
+% Etapas
+\node[procbox, below=1cm of img, xshift=1.5cm] (prep) {\textbf{Preprocessing}\\Crop + Resize 270x270};
+
+\node[procbox, below=0.8cm of prep] (detect) {\textbf{Detection}\\CNN SSD-style + NMS};
+
+\node[procbox, below=0.8cm of detect] (select) {\textbf{Assignment}\\Algoritmo Hungaro\\(70\% dist, 30\% conf)};
+
+\node[procbox, below=0.8cm of select] (recog) {\textbf{Recognition}\\3 Clasificadores CNN\\(vert/quad/hori)};
+
+\node[procbox, below=0.8cm of recog] (track) {\textbf{Tracking}\\Reglas temporales};
+
+% Output
+\node[outputbox, below=0.8cm of track] (output) {\textbf{Output}\\Color + Blink + Signal ID};
+
+% Arrows inputs
+\draw[arrow] (img.south) -- ++(0,-0.3) -| (prep.north);
+\draw[arrow] (boxes.south) -- ++(0,-0.3) -| (prep.north);
+
+% Arrows between stages
+\draw[arrow] (prep) -- (detect);
+\draw[arrow] (detect) -- (select);
+\draw[arrow] (select) -- (recog);
+\draw[arrow] (recog) -- (track);
+\draw[arrow] (track) -- (output);
+
+% Archivos Python
+\node[right=0.3cm of prep, font=\tiny\ttfamily, text=gray] {utils.py};
+\node[right=0.3cm of detect, font=\tiny\ttfamily, text=gray] {detector.py};
+\node[right=0.3cm of select, font=\tiny\ttfamily, text=gray] {selector.py};
+\node[right=0.3cm of recog, font=\tiny\ttfamily, text=gray] {recognizer.py};
+\node[right=0.3cm of track, font=\tiny\ttfamily, text=gray] {tracking.py};
+
+% Nota de simplificacion
+\node[below=0.3cm of output, font=\footnotesize, text=gray, align=center] {Linea punteada = simplificacion\\respecto a Apollo};
+
+\end{tikzpicture}
+\caption{Pipeline de la reimplementacion (simplificado)}
+\label{fig:pipeline_reimpl}
+\end{figure}
+
+
+% ============================================================
+% DIAGRAMA 3: COMPARACION LADO A LADO
+% ============================================================
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=0.6cm,
+    box/.style={rectangle, draw, rounded corners, minimum width=2.2cm, minimum height=0.6cm, align=center, font=\scriptsize},
+    inputbox/.style={box, fill=blue!15},
+    procbox/.style={box, fill=orange!20},
+    outputbox/.style={box, fill=green!15},
+    simplebox/.style={box, fill=yellow!20, dashed},
+    greybox/.style={box, fill=gray!30},
+    arrow/.style={->, thick, >=stealth},
+    eqarrow/.style={<->, thick, >=stealth, color=blue!60}
+]
+
+% ========== APOLLO (izquierda) ==========
+\node[font=\bfseries] (titleA) {Apollo Original};
+
+\node[inputbox, below=0.3cm of titleA, xshift=-2cm] (imgA) {Imagen};
+\node[inputbox, right=0.5cm of imgA] (hdmapA) {HD-Map};
+\node[inputbox, right=0.5cm of hdmapA] (poseA) {Pose};
+
+\node[procbox, below=1.2cm of hdmapA] (prepA) {Region Proposal\\(3D a 2D)};
+\node[procbox, below=0.5cm of prepA] (detectA) {Detection};
+\node[procbox, below=0.5cm of detectA] (selectA) {Assignment};
+\node[procbox, below=0.5cm of selectA] (recogA) {Recognition};
+\node[procbox, below=0.5cm of recogA] (trackA) {Tracking};
+\node[outputbox, below=0.5cm of trackA] (outA) {Output};
+
+% Coordenada para linea horizontal Apollo
+\coordinate (linea_A) at ($(imgA.south)+(0,-0.3)$);
+
+% Arrows Apollo - todas a la misma altura
+\draw[arrow] (imgA.south) -- (imgA.south |- linea_A) -| (prepA.north);
+\draw[arrow] (hdmapA.south) -- (hdmapA.south |- linea_A) -- (prepA.north |- linea_A) -- (prepA.north);
+\draw[arrow] (poseA.south) -- (poseA.south |- linea_A) -| (prepA.north);
+\draw[arrow] (prepA) -- (detectA);
+\draw[arrow] (detectA) -- (selectA);
+\draw[arrow] (selectA) -- (recogA);
+\draw[arrow] (recogA) -- (trackA);
+\draw[arrow] (trackA) -- (outA);
+
+% ========== REIMPLEMENTACION (derecha) ==========
+\node[font=\bfseries, right=5cm of titleA] (titleR) {Reimplementacion};
+
+\node[inputbox, below=0.3cm of titleR, xshift=-0.8cm] (imgR) {Imagen};
+\node[simplebox, right=0.5cm of imgR] (boxesR) {Boxes (txt)};
+
+\node[simplebox, below=1.2cm of imgR, xshift=0.8cm] (prepR) {Preprocessing\\(2D directo)};
+\node[procbox, below=0.5cm of prepR] (detectR) {Detection};
+\node[procbox, below=0.5cm of detectR] (selectR) {Assignment};
+\node[procbox, below=0.5cm of selectR] (recogR) {Recognition};
+\node[procbox, below=0.5cm of recogR] (trackR) {Tracking};
+\node[outputbox, below=0.5cm of trackR] (outR) {Output};
+
+% Coordenada para linea horizontal Reimpl
+\coordinate (linea_R) at ($(imgR.south)+(0,-0.3)$);
+
+% Arrows Reimpl - todas a la misma altura
+\draw[arrow] (imgR.south) -- (imgR.south |- linea_R) -| (prepR.north);
+\draw[arrow] (boxesR.south) -- (boxesR.south |- linea_R) -| (prepR.north);
+\draw[arrow] (prepR) -- (detectR);
+\draw[arrow] (detectR) -- (selectR);
+\draw[arrow] (selectR) -- (recogR);
+\draw[arrow] (recogR) -- (trackR);
+\draw[arrow] (trackR) -- (outR);
+
+% ========== EQUIVALENCIAS ==========
+\draw[eqarrow] (detectA.east) -- node[above, font=\tiny] {=} (detectR.west);
+\draw[eqarrow] (selectA.east) -- node[above, font=\tiny] {=} (selectR.west);
+\draw[eqarrow] (recogA.east) -- node[above, font=\tiny] {=} (recogR.west);
+\draw[eqarrow] (trackA.east) -- node[above, font=\tiny] {=} (trackR.west);
+
+% Diferencia
+\draw[dashed, red, thick] (prepA.east) -- node[above, font=\tiny, red] {$\neq$} (prepR.west);
+
+% Leyenda
+\node[below=0.8cm of outA, xshift=2cm, font=\scriptsize, align=left] {
+    \textcolor{blue}{$\leftrightarrow$ Equivalente funcionalmente}\\
+    \textcolor{red}{- - - Simplificado (no HD-Map)}
+};
+
+\end{tikzpicture}
+\caption{Comparacion lado a lado: Apollo vs Reimplementacion}
+\label{fig:pipeline_comparison}
+\end{figure}
+
+% Reactivar shorthand de babel
+\shorthandon{<>}

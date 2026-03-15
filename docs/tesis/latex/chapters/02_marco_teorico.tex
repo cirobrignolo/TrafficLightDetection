@@ -1,272 +1,196 @@
 \chapter{Marco Teórico}
 \label{cap:marco_teorico}
 
-Este capítulo presenta los conceptos específicos necesarios para comprender la metodología propuesta y su aplicación al sistema de detección de semáforos.
+Este capítulo presenta los conceptos necesarios para comprender el trabajo y todo lo que se conocía previamente sobre el sistema Apollo antes de realizar nuestro análisis.
 
-\section{Oracle-Based Testing}
+\section{Conceptos de Testing}
 
-\subsection{Concepto de Test Oracle}
+\subsection{Oracle-Based Testing}
 
-Un \textit{test oracle} es un mecanismo para determinar si un test ha pasado o fallado \cite{barr2015oracle}. En oracle-based testing, se compara el comportamiento del sistema bajo test con un oráculo de referencia que define el comportamiento correcto esperado.
+Un \textit{test oracle} es un mecanismo para determinar si un test ha pasado o fallado \cite{barr2015oracle}. En este trabajo, el sistema Apollo original actúa como oráculo: la reimplementación se considera correcta si produce los mismos resultados que Apollo para las mismas entradas.
 
-\subsection{Oráculos de Implementación de Referencia}
+\textbf{Limitación:} Este enfoque asume que Apollo es correcto. Si Apollo tiene bugs, la reimplementación los replicará.
 
-Este trabajo utiliza un \textit{oráculo de implementación de referencia}: el sistema Apollo original actúa como referencia del comportamiento correcto. La reimplementación en PyTorch se valida comparándola directamente con Apollo.
+\subsection{Testing de Caja Blanca vs Caja Negra}
 
-\textbf{Ventajas de este enfoque:}
-\begin{itemize}
-    \item No requiere especificación formal completa
-    \item La implementación de referencia es ejecutable y observable
-    \item Permite validación exhaustiva mediante comparación directa de outputs
-\end{itemize}
+\textbf{Caja negra:} Diseñar tests solo basándose en la especificación de entrada/salida, sin conocer la implementación interna.
 
-\textbf{Limitación principal:} Asume que la implementación de referencia (Apollo) es correcta. Si Apollo tiene bugs, la reimplementación los replicará.
+\textbf{Caja blanca:} Diseñar tests aprovechando el conocimiento de la implementación interna: parámetros, thresholds, reglas de decisión, casos límite.
 
-\subsection{El Oracle Problem}
+Este trabajo argumenta que para sistemas ML complejos sin especificación formal, el testing de caja blanca es más efectivo porque permite diseñar tests que exploten el conocimiento interno del sistema.
 
-El \textit{oracle problem} \cite{barr2015oracle} se refiere a la dificultad de determinar la correctitud de las salidas cuando:
+\subsection{Testing Exploratorio}
 
-\begin{itemize}
-    \item No existe especificación formal completa del comportamiento
-    \item La salida correcta depende de factores complejos o inobservables
-    \item Múltiples salidas pueden ser consideradas correctas
-    \item El espacio de salidas es muy grande
-\end{itemize}
+El testing exploratorio consiste en diseñar y ejecutar tests de forma simultánea, basándose en el conocimiento adquirido durante el proceso. A diferencia del testing planificado, los tests se diseñan iterativamente a medida que se comprende mejor el sistema.
 
-En sistemas de ML como el detector de semáforos, el oracle problem es particularmente relevante porque:
-\begin{itemize}
-    \item El comportamiento correcto puede depender de factores sutiles de la imagen
-    \item Los modelos neuronales son cajas negras sin especificación explícita
-    \item Hay casos ambiguos donde múltiples clasificaciones son razonables
-\end{itemize}
-
-Usar Apollo como oráculo resuelve parcialmente este problema, pero introduce la limitación mencionada de asumir su correctitud.
+Este enfoque es particularmente útil para sistemas ML donde el comportamiento correcto no está formalmente especificado.
 
 \section{Reverse Engineering de Software}
 
-\subsection{Definición}
+El reverse engineering es el proceso de analizar un sistema para extraer sus especificaciones a partir del código fuente \cite{chikofsky1990reverse}.
 
-El reverse engineering es el proceso de analizar un sistema para identificar sus componentes y sus interrelaciones, y crear representaciones del sistema en otra forma o a un nivel de abstracción superior \cite{chikofsky1990reverse}.
+En este trabajo se aplicaron dos técnicas:
 
-En este trabajo, el reverse engineering se aplicó para extraer las especificaciones funcionales del módulo TLR de Apollo a partir de su código fuente en C++.
+\textbf{Análisis estático:} Examinar el código sin ejecutarlo para extraer parámetros, estructuras de datos, y lógica de decisión.
 
-\subsection{Proceso Aplicado}
+\textbf{Análisis dinámico:} Ejecutar el sistema con inputs conocidos para observar y validar el comportamiento.
 
-El proceso de reverse engineering siguió estas etapas:
+\section{Componentes Técnicos}
 
-\subsubsection{Análisis Estático del Código}
+\subsection{Intersection over Union (IoU)}
 
-Examen del código fuente sin ejecutarlo:
-\begin{itemize}
-    \item Identificación de estructuras de datos (e.g., \texttt{SemanticTable} para tracking)
-    \item Mapeo de dependencias entre módulos
-    \item Documentación de interfaces entre componentes
-    \item Extracción de constantes numéricas (thresholds, pesos, etc.)
-\end{itemize}
-
-\subsubsection{Análisis Dinámico}
-
-Observación del comportamiento durante la ejecución:
-\begin{itemize}
-    \item Instrumentación del código con logging
-    \item Ejecución con inputs conocidos
-    \item Verificación del flujo de datos entre etapas
-    \item Confirmación de parámetros extraídos estáticamente
-\end{itemize}
-
-\textbf{Hallazgo clave:} Muchas decisiones de diseño (e.g., por qué NMS threshold = 0.6) no estaban documentadas. El análisis dinámico permitió validar que estos valores se usan consistentemente pero no reveló su justificación.
-
-\subsubsection{Documentación Extraída}
-
-El resultado fue una especificación funcional completa:
-\begin{itemize}
-    \item Tabla de todos los parámetros numéricos con sus valores exactos
-    \item Descripción de la lógica de cada etapa del pipeline
-    \item Reglas de tracking temporal con sus condiciones
-    \item Casos especiales y edge cases manejados
-\end{itemize}
-
-Esta especificación sirvió como base para la reimplementación.
-
-\section{Testing de Sistemas de Machine Learning}
-
-\subsection{Desafíos Específicos}
-
-El testing de sistemas ML presenta desafíos que no existen en software tradicional \cite{zhang2020machine}:
-
-\begin{enumerate}
-    \item \textbf{Ausencia de especificación formal:} El comportamiento se aprende de datos, no se programa explícitamente
-
-    \item \textbf{Comportamiento no determinístico:} Variaciones pequeñas en input pueden cambiar outputs
-
-    \item \textbf{Dependencia de los datos:} El comportamiento depende críticamente del dataset de entrenamiento
-
-    \item \textbf{Degradación silenciosa:} Los modelos pueden degradarse sin errores explícitos
-
-    \item \textbf{Dificultad para caracterizar correctitud:} ¿Qué significa que una detección sea "correcta"?
-\end{enumerate}
-
-Estos desafíos motivaron el diseño de múltiples estrategias de testing complementarias en este trabajo.
-
-\subsection{Estrategias de Testing para Sistemas ML}
-
-El testing de sistemas ML puede abordarse desde múltiples perspectivas complementarias:
-
-\subsubsection{Metamorphic Testing}
-
-El metamorphic testing \cite{chen2018metamorphic} verifica relaciones entre ejecuciones con entradas relacionadas, sin necesidad de conocer la salida correcta.
-
-\textbf{Principio:} En lugar de preguntar "¿es este output correcto?", se pregunta "¿cómo debería cambiar el output cuando transformo el input de cierta manera?"
-
-\textbf{Ejemplos de relaciones metamórficas:}
-\begin{itemize}
-    \item Invarianza al orden: Permutar inputs no debe cambiar el resultado final
-    \item Escalamiento proporcional: Escalar imagen y coordenadas debe producir detecciones escaladas proporcionalmente
-    \item Robustez a perturbaciones pequeñas: Ruido gaussiano pequeño no debería cambiar clasificaciones
-\end{itemize}
-
-\textbf{Ventaja:} No requiere oráculo para la salida específica, solo para relaciones entre salidas.
-
-\subsubsection{Property-Based Testing}
-
-Verificar que el sistema cumple propiedades invariantes independientemente del input específico.
-
-\textbf{Ejemplos de propiedades para sistemas de detección:}
-\begin{itemize}
-    \item \textit{Monotonía en NMS:} Si IoU entre dos detecciones supera un threshold, solo debe mantenerse la de mayor score
-    \item \textit{Conservación temporal:} Un semáforo no puede cambiar directamente de rojo a verde sin pasar por amarillo
-    \item \textit{Consistencia temporal:} Los cambios de estado deben respetar tiempos mínimos físicamente plausibles
-    \item \textit{Safety:} En caso de ambigüedad, sesgo hacia el estado más conservador
-\end{itemize}
-
-\subsubsection{Exploratory Testing}
-
-Diseño manual de casos de test basado en el conocimiento del sistema para encontrar debilidades:
-
-\textbf{Enfoque:} A partir del entendimiento profundo del código y la arquitectura, diseñar inputs específicos que puedan revelar comportamientos inesperados.
-
-\textbf{Ejemplos de escenarios a explorar:}
-\begin{itemize}
-    \item Condiciones extremas de iluminación (sobreexposición, subexposición)
-    \item Oclusión parcial de objetos relevantes
-    \item Objetos con apariencia similar que puedan confundir al clasificador
-    \item Inputs con valores en los límites de validez (timestamps negativos, coordenadas fuera de rango)
-\end{itemize}
-
-\section{Componentes Técnicos del Sistema}
-
-Esta sección describe brevemente los componentes técnicos utilizados en el sistema, necesarios para entender la implementación pero sin entrar en detalles algorítmicos exhaustivos.
-
-\subsection{Detección de Objetos y Métricas}
-
-\subsubsection{Intersection over Union (IoU)}
-
-Métrica fundamental para medir solapamiento entre bounding boxes:
+Métrica para medir solapamiento entre bounding boxes:
 
 \begin{equation}
 IoU(A, B) = \frac{|A \cap B|}{|A \cup B|}
 \end{equation}
 
-\textbf{Uso en el sistema:}
+Se usa en Non-Maximum Suppression (NMS) para eliminar detecciones duplicadas.
+
+\subsection{Algoritmo Húngaro}
+
+El algoritmo húngaro \cite{kuhn1955hungarian} resuelve el problema de asignación óptima. En el contexto de detección de semáforos, se usa para asignar detecciones a regiones de interés conocidas (projection boxes), minimizando un costo que combina distancia espacial y confianza de detección.
+
+\subsection{Conversión Caffe a PyTorch}
+
+Apollo utiliza modelos en formato Caffe (framework legacy). La reimplementación requiere:
+
+\begin{enumerate}
+    \item Parsear archivos \texttt{.prototxt} (definición de arquitectura)
+    \item Mapear capas Caffe a equivalentes PyTorch
+    \item Cargar pesos desde archivos \texttt{.caffemodel}
+    \item Validar equivalencia numérica de outputs
+\end{enumerate}
+
+\section{El Sistema Apollo}
+
+Esta sección presenta todo lo que se conocía sobre Apollo \textbf{antes} de realizar nuestro análisis. La información proviene de documentación pública y del paper de FSE 2020 \cite{peng2020first}.
+
+\subsection{Visión General}
+
+Apollo es una plataforma open source para vehículos autónomos desarrollada por Baidu \cite{apollo_auto}. El sistema incluye módulos para:
+
 \begin{itemize}
-    \item NMS (Non-Maximum Suppression): Eliminar detecciones duplicadas con IoU $>$ 0.6
-    \item Validación de detecciones: Comparar bboxes predichos vs ground truth
-    \item Tracking: Calcular distancia entre detección actual y predicción
+    \item \textbf{Percepción:} Detección de obstáculos, semáforos, carriles
+    \item \textbf{Predicción:} Predicción de trayectorias de otros vehículos
+    \item \textbf{Planificación:} Planificación de ruta y maniobras
+    \item \textbf{Control:} Control de actuadores del vehículo
 \end{itemize}
 
-\subsubsection{Métricas de Evaluación}
+\subsection{Módulo de Detección de Semáforos (TLR)}
 
-\textbf{Precision y Recall:}
-\begin{equation}
-Precision = \frac{TP}{TP + FP} \quad \quad Recall = \frac{TP}{TP + FN}
-\end{equation}
+Según la documentación de Apollo, el módulo TLR es responsable de:
 
-\textbf{Average Precision (AP):} Área bajo la curva Precision-Recall.
+\begin{itemize}
+    \item Detectar la presencia de semáforos en imágenes de cámara
+    \item Reconocer el estado actual (rojo, amarillo, verde, apagado)
+    \item Mantener tracking temporal de los semáforos
+\end{itemize}
 
-Estas métricas se utilizan para evaluar el desempeño del sistema en los tests exploratorios.
+\subsubsection{Pipeline Documentado}
 
-\subsection{Algoritmo Húngaro para Tracking}
+La documentación de Apollo describe el siguiente pipeline:
 
-El algoritmo húngaro \cite{kuhn1955hungarian} resuelve el problema de asignación óptima entre detecciones actuales y tracks existentes.
+\begin{enumerate}
+    \item \textbf{Preprocessing:} Obtención de regiones de interés (projection boxes) a partir del HD-Map
+    \item \textbf{Detection:} Red neuronal para detectar semáforos dentro de las regiones
+    \item \textbf{Recognition:} Clasificadores para determinar el color del semáforo
+    \item \textbf{Tracking:} Mantenimiento de estados a lo largo del tiempo
+\end{enumerate}
 
-\textbf{Problema:} Dadas $n$ detecciones y $m$ tracks, encontrar la asignación que minimice el costo total.
+\subsubsection{Dependencia del HD-Map}
 
-\textbf{Input:} Matriz de costos $C \in \mathbb{R}^{n \times m}$ donde:
-\begin{equation}
-C_{ij} = w_1 \cdot distance(d_i, t_j) + w_2 \cdot (1 - confidence(d_i))
-\end{equation}
+Un aspecto importante documentado es que Apollo depende de mapas HD (High Definition Maps) para:
 
-\textbf{Output:} Conjunto de pares (detección, track) con costo total mínimo.
+\begin{itemize}
+    \item Conocer la ubicación 3D de semáforos en el mundo real
+    \item Proyectar estas ubicaciones a coordenadas 2D en la imagen de cámara
+    \item Identificar persistentemente cada semáforo mediante un ID único
+\end{itemize}
 
-\textbf{Complejidad:} $O(n^3)$
+Esto significa que Apollo no busca semáforos en toda la imagen, sino solo en regiones donde el HD-Map indica que debería haber semáforos.
 
-\textbf{Uso en Apollo:} $w_1 = 0.7$, $w_2 = 0.3$, distancia calculada con Gaussiana 2D ($\sigma = 100$).
+\subsection{Arquitectura de Software}
 
-\section{Conversión entre Frameworks de Deep Learning}
+Apollo utiliza:
 
-\subsection{Caffe vs PyTorch}
+\begin{itemize}
+    \item \textbf{CyberRT:} Framework de mensajería propio para comunicación entre módulos
+    \item \textbf{Bazel:} Sistema de build
+    \item \textbf{Docker:} Containerización para deployment
+    \item \textbf{Caffe:} Framework de deep learning para los modelos
+\end{itemize}
 
-Apollo utiliza Caffe (framework legacy), mientras que la reimplementación usa PyTorch:
+\subsection{Requisitos de Hardware}
+
+Según la documentación oficial:
 
 \begin{table}[H]
 \centering
-\begin{tabular}{|l|p{5cm}|p{5cm}|}
+\begin{tabular}{|l|l|}
 \hline
-\textbf{Aspecto} & \textbf{Caffe} & \textbf{PyTorch} \\
+\textbf{Componente} & \textbf{Requisito} \\
 \hline
-Paradigma & Declarativo (define-and-run) & Imperativo (define-by-run) \\
-\hline
-Debugging & Difícil & Estándar de Python \\
-\hline
-Estado & Legacy, poco mantenido & Activamente desarrollado \\
+CPU & 8+ cores \\
+RAM & 16 GB \\
+GPU & NVIDIA RTX 20xx+ \\
+OS & Ubuntu 18.04/20.04/22.04 \\
+CUDA & 11.8 \\
+Docker & $\geq$ 19.03 \\
+Espacio disco & $\sim$50 GB \\
 \hline
 \end{tabular}
-\caption{Diferencias clave entre frameworks}
+\caption{Requisitos de hardware/software de Apollo}
 \end{table}
 
-\subsection{Proceso de Conversión}
+\subsection{Ubicación del Código TLR}
 
-La conversión de modelos requiere:
+El módulo TLR en Apollo está dividido en 4 carpetas dentro de \texttt{modules/perception/}:
 
-\begin{enumerate}
-    \item \textbf{Mapeo de arquitectura:}
-    \begin{itemize}
-        \item Parsear \texttt{.prototxt} de Caffe
-        \item Crear capas equivalentes en PyTorch
-        \item Mapear nombres de capas y parámetros
-    \end{itemize}
+\begin{verbatim}
+modules/perception/
+├── traffic_light_region_proposal/  # Generación de ROIs desde HD-Map
+├── traffic_light_detection/        # Detección de semáforos en imagen
+├── traffic_light_recognition/      # Clasificación de color
+└── traffic_light_tracking/         # Tracking temporal y reglas
+\end{verbatim}
 
-    \item \textbf{Conversión de pesos:}
-    \begin{itemize}
-        \item Leer \texttt{.caffemodel} (formato binario)
-        \item Convertir formato de tensores
-        \item Manejar diferencias en ordenamiento de dimensiones (e.g., NCHW vs NHWC)
-    \end{itemize}
+Cada módulo tiene su propia estructura con archivos de configuración, código fuente, y tests.
 
-    \item \textbf{Validación numérica:}
-    \begin{itemize}
-        \item Comparar outputs capa por capa con misma entrada
-        \item Verificar diferencias < tolerancia (típicamente $10^{-6}$)
-        \item Validar gradientes si el modelo se re-entrena
-    \end{itemize}
-\end{enumerate}
+\subsection{Paper de FSE 2020}
 
-\subsection{Desafíos de la Conversión}
+El paper ``A First Look at the Integration of Machine Learning Models in Complex Autonomous Driving Systems'' \cite{peng2020first} analiza cómo se integran los modelos de ML en Apollo e identifica:
 
-\textbf{Capas custom:} Apollo usa capas propias (e.g., \texttt{RPNProposalSSD}, \texttt{DFMB-PSROIAlign}) que no tienen equivalente directo en PyTorch. Estas requirieron reimplementación completa basada en el código C++ original.
+\begin{itemize}
+    \item \textbf{Acoplamiento estrecho:} Los componentes están fuertemente integrados
+    \item \textbf{Dependencias de hardware:} Muchos componentes requieren GPUs específicas
+    \item \textbf{Complejidad de configuración:} El despliegue requiere configuraciones extensas
+\end{itemize}
 
-\textbf{Diferencias de precisión numérica:} Aunque ambos frameworks usan float32, diferencias en el backend de operaciones pueden producir diferencias pequeñas ($\sim 10^{-7}$) que deben ser toleradas en la validación.
+Este paper motivó la idea de que extraer y reimplementar un subsistema podría facilitar su testing.
+
+\section{Lo No Documentado}
+
+Aunque la documentación de Apollo describe el pipeline a alto nivel, varios aspectos críticos \textbf{no están documentados}:
+
+\begin{itemize}
+    \item Valores específicos de parámetros (thresholds, pesos, sigmas)
+    \item Reglas de seguridad del tracking temporal
+    \item Lógica de decisión en casos ambiguos
+    \item Justificación de decisiones de diseño
+\end{itemize}
+
+Estos aspectos solo se pueden descubrir mediante análisis del código fuente, lo cual es parte del trabajo de esta tesis.
 
 \section{Resumen}
 
-Este capítulo presentó los conceptos técnicos necesarios para comprender el trabajo:
+Este capítulo presentó:
 
 \begin{itemize}
-    \item \textbf{Oracle-based testing} con Apollo como oráculo de referencia
-    \item \textbf{Reverse engineering} para extraer especificaciones del código
-    \item \textbf{Estrategias de testing de ML:} Metamorphic, property-based, y adversarial
-    \item \textbf{Componentes técnicos:} IoU, métricas de evaluación, algoritmo húngaro
-    \item \textbf{Conversión entre frameworks:} Caffe a PyTorch con validación numérica
+    \item Conceptos de testing relevantes: oracle-based testing, caja blanca vs caja negra, testing exploratorio
+    \item Técnicas de reverse engineering: análisis estático y dinámico
+    \item Componentes técnicos: IoU, algoritmo húngaro, conversión Caffe→PyTorch
+    \item Todo lo conocido públicamente sobre Apollo y su módulo TLR antes de nuestro análisis
 \end{itemize}
 
-Estos conceptos se aplicaron concretamente en los capítulos siguientes para analizar Apollo, reimplementar el sistema, y diseñar la suite de tests.
+El siguiente capítulo describe el proceso de análisis que realizamos para extraer la información no documentada y las decisiones que esto informó.

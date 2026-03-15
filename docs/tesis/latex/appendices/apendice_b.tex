@@ -1,0 +1,115 @@
+\chapter{Intento Fallido: Recorte de Apollo}
+\label{apendice:recorte_fallido}
+
+Este apéndice documenta el primer enfoque que se intentó antes de decidir reimplementar desde cero: intentar recortar el módulo TLR del sistema Apollo completo.
+
+\section{Estrategia Inicial}
+
+La idea era aislar el módulo TLR del código completo de Apollo:
+
+\begin{enumerate}
+    \item Clonar el repositorio completo de Apollo
+    \item Identificar el módulo de percepción de semáforos
+    \item Eliminar progresivamente dependencias innecesarias
+    \item Mantener solo el código esencial para TLR
+\end{enumerate}
+
+\section{Problemas Encontrados}
+
+\subsection{Complejidad del Sistema}
+
+\begin{itemize}
+    \item \textbf{Tamaño del código:} Millones de líneas de código C++
+    \item \textbf{Dependencias profundas:} El módulo TLR dependía de:
+    \begin{itemize}
+        \item CyberRT: Framework de mensajería propio de Apollo
+        \item Librerías de utilidades internas
+        \item Configuraciones específicas del ecosistema Apollo
+    \end{itemize}
+\end{itemize}
+
+\subsection{Requisitos de Configuración}
+
+Apollo requiere una configuración extensa:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Componente} & \textbf{Requisito} \\
+\hline
+CPU & 8+ cores \\
+RAM & 16 GB \\
+GPU & NVIDIA RTX 20xx+ \\
+OS & Ubuntu 18.04/20.04/22.04 \\
+CUDA & 11.8 \\
+Docker & $\geq$ 19.03 \\
+Espacio disco & $\sim$50 GB \\
+\hline
+\end{tabular}
+\caption{Requisitos de hardware/software de Apollo}
+\end{table}
+
+\subsection{Proceso de Compilación}
+
+La compilación de Apollo involucra:
+\begin{enumerate}
+    \item Descargar imagen Docker ($\sim$15 GB)
+    \item Configurar container con NVIDIA runtime
+    \item Compilar todo el sistema (30+ minutos en hardware típico)
+    \item Resolver dependencias de Bazel (sistema de build)
+\end{enumerate}
+
+\subsection{Errores Encontrados}
+
+Durante los intentos de recorte, se encontraron múltiples errores:
+
+\begin{itemize}
+    \item Errores crípticos de Bazel al remover dependencias
+    \item Conflictos de versiones entre librerías internas
+    \item Problemas de linking al intentar compilar módulos aislados
+    \item Errores de runtime por falta de configuraciones de CyberRT
+\end{itemize}
+
+\section{Tiempo Invertido}
+
+Se invirtieron varias semanas intentando:
+\begin{itemize}
+    \item Configurar el ambiente de desarrollo
+    \item Entender el sistema de build
+    \item Identificar y remover dependencias
+    \item Resolver errores de compilación
+\end{itemize}
+
+Sin lograr una versión ejecutable del módulo TLR aislado.
+
+\section{Razones del Fracaso}
+
+\begin{enumerate}
+    \item \textbf{Acoplamiento estrecho:} El código de Apollo está diseñado para funcionar como un sistema integrado, no como módulos independientes
+
+    \item \textbf{CyberRT como dependencia central:} El framework de mensajería está entrelazado con toda la lógica de negocio
+
+    \item \textbf{Falta de documentación:} No hay guías para extraer módulos individuales
+
+    \item \textbf{Complejidad del build:} Bazel hace difícil entender qué dependencias son realmente necesarias
+\end{enumerate}
+
+\section{Lección Aprendida}
+
+Esta experiencia motivó el cambio de estrategia hacia la reimplementación. La lección principal fue:
+
+\textbf{Para sistemas legacy complejos con alto acoplamiento, reimplementar un subsistema desde cero puede ser más viable que intentar extraerlo del sistema original.}
+
+La reimplementación, aunque requiere más trabajo inicial de análisis, produce un artefacto mucho más manejable y comprensible.
+
+\section{Valor del Intento Fallido}
+
+Aunque el recorte no funcionó, el intento no fue tiempo perdido:
+
+\begin{itemize}
+    \item Reveló la complejidad real del sistema
+    \item Motivó la búsqueda de alternativas
+    \item Generó familiaridad inicial con el código de Apollo
+    \item Informó las decisiones de diseño de la reimplementación
+\end{itemize}
