@@ -1,115 +1,134 @@
-\chapter{Intento Fallido: Recorte de Apollo}
+\chapter{Intento Fallido: Recorte del Código Original de Apollo}
 \label{apendice:recorte_fallido}
 
-Este apéndice documenta el primer enfoque que se intentó antes de decidir reimplementar desde cero: intentar recortar el módulo TLR del sistema Apollo completo.
+Este apéndice documenta en detalle el primer enfoque que se intentó antes de decidir aislar el módulo TLR por reconstrucción: tomar el código C++ original de Apollo y recortar todo lo que no fuera estrictamente parte del TLR. El Capítulo~\ref{cap:reimplementacion} menciona este intento brevemente; aquí se desarrollan las métricas concretas y las razones específicas por las que la estrategia no fue viable.
 
-\section{Estrategia Inicial}
+\section{Estrategia}
 
-La idea era aislar el módulo TLR del código completo de Apollo:
+La intuición inicial era directa: si el TLR ya existe como código en Apollo, lo más eficiente es tomar ese código tal cual y recortar el resto del sistema hasta dejar solo lo necesario. Esta estrategia evita reescrituras y, en principio, garantiza fidelidad automática con el original.
+
+El plan tenía tres pasos:
 
 \begin{enumerate}
-    \item Clonar el repositorio completo de Apollo
-    \item Identificar el módulo de percepción de semáforos
-    \item Eliminar progresivamente dependencias innecesarias
-    \item Mantener solo el código esencial para TLR
+    \item Clonar el repositorio de Apollo.
+    \item Identificar las dependencias mínimas del TLR.
+    \item Eliminar todo lo demás hasta obtener una versión ejecutable acotada.
 \end{enumerate}
+
+En la práctica, ninguno de los tres pasos cerró.
 
 \section{Problemas Encontrados}
 
-\subsection{Complejidad del Sistema}
+\subsection{Volumen de Código Asociado}
 
-\begin{itemize}
-    \item \textbf{Tamaño del código:} Millones de líneas de código C++
-    \item \textbf{Dependencias profundas:} El módulo TLR dependía de:
-    \begin{itemize}
-        \item CyberRT: Framework de mensajería propio de Apollo
-        \item Librerías de utilidades internas
-        \item Configuraciones específicas del ecosistema Apollo
-    \end{itemize}
-\end{itemize}
+El TLR está dividido en cuatro componentes que suman aproximadamente 4\,825 líneas de C++:
 
-\subsection{Requisitos de Configuración}
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|c|}
+\hline
+\textbf{Componente} & \textbf{Líneas de C++} \\
+\hline
+\texttt{traffic\_light\_region\_proposal} & 1\,720 \\
+\texttt{traffic\_light\_detection} & 1\,230 \\
+\texttt{traffic\_light\_recognition} & 683 \\
+\texttt{traffic\_light\_tracking} & 1\,192 \\
+\hline
+\textbf{Subtotal TLR} & \textbf{4\,825} \\
+\hline
+\end{tabular}
+\caption{Líneas de código del módulo TLR en Apollo.}
+\end{table}
 
-Apollo requiere una configuración extensa:
+Estas 4\,825 líneas no son ejecutables por sí solas. Apollo construye el TLR sobre infraestructura compartida con el resto del sistema:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|c|c|}
+\hline
+\textbf{Dependencia obligatoria} & \textbf{Archivos} & \textbf{Líneas} \\
+\hline
+CyberRT (\textit{framework} de mensajería) & 475 & 64\,949 \\
+\textit{Perception common} (utilidades y \textit{inference}) & $\sim$200 & 63\,772 \\
+\textit{Modules common} (\textit{math}, \textit{configs}, \textit{logging}) & $\sim$100 & 19\,922 \\
+\textit{Map module} (HD-Map) & $\sim$100 & 20\,740 \\
+\hline
+\textbf{Subtotal dependencias} & \textbf{$\sim$875} & \textbf{169\,383} \\
+\hline
+\hline
+\textbf{Total necesario para ejecutar TLR} & \textbf{$\sim$903} & \textbf{$\sim$174\,208} \\
+\hline
+\end{tabular}
+\caption{Dependencias obligatorias y conteo total de líneas requeridas para ejecutar el TLR como parte de Apollo.}
+\end{table}
+
+Para que cualquiera de los cuatro componentes del TLR compile y se ejecute, se necesitan los cuatro bloques de infraestructura. No son opcionales: CyberRT provee los \textit{channels} de mensajería, \textit{perception common} provee el \textit{inference engine} sobre el que corren las redes Caffe, \textit{modules common} provee las primitivas matemáticas y de configuración, y \textit{map module} provee acceso al HD-Map. ``Recortar'' significaba en realidad ``mantener todo eso''.
+
+Además, Apollo declara 54 bibliotecas externas en \texttt{third\_party/} (CUDA, cuDNN, TensorRT, OpenCV, Eigen, Protobuf, libtorch, OSQP, gflags, glog, entre otras). Las críticas para TLR (libtorch, OpenCV, Eigen, Protobuf, gflags, glog, CUDA/cuDNN/TensorRT) no se pueden eliminar.
+
+\subsection{Acoplamiento con CyberRT}
+
+CyberRT no es una biblioteca utilitaria que se invoca: es el sustrato sobre el que vive cada componente. Los archivos \texttt{.dag}, \texttt{.launch} y \texttt{cyberfile.xml} de cada componente del TLR describen su integración en el grafo de ejecución de Apollo. Cualquier intento de ejecutar el TLR ``aislado'' requería levantar al menos un subconjunto de CyberRT, lo que implicaba entender el modelo de \textit{channels}, \textit{readers/writers}, \textit{services}, \textit{transport} y \textit{scheduler}. Mantener CyberRT ``por si acaso'' invalidaba la idea misma de recorte.
+
+\subsection{Requisitos de Hardware y Sistema}
+
+La documentación oficial de Apollo lista los siguientes requisitos para que el módulo de percepción ejecute:
 
 \begin{table}[H]
 \centering
 \begin{tabular}{|l|l|}
 \hline
-\textbf{Componente} & \textbf{Requisito} \\
+\textbf{Componente} & \textbf{Requisito mínimo} \\
 \hline
-CPU & 8+ cores \\
-RAM & 16 GB \\
-GPU & NVIDIA RTX 20xx+ \\
-OS & Ubuntu 18.04/20.04/22.04 \\
+CPU & 8 núcleos \\
+RAM & 16\,GB \\
+GPU & NVIDIA con arquitectura Turing o superior (RTX 20xx+) \\
+Disco & SSD con $\sim$50\,GB libres (solo código + Docker) \\
+Sistema operativo & Ubuntu 18.04, 20.04 o 22.04 \\
+NVIDIA driver & $\geq$\,520.61.05 \\
 CUDA & 11.8 \\
-Docker & $\geq$ 19.03 \\
-Espacio disco & $\sim$50 GB \\
+Docker & $\geq$\,19.03 \\
+NVIDIA Container Toolkit & requerido \\
 \hline
 \end{tabular}
-\caption{Requisitos de hardware/software de Apollo}
+\caption{Requisitos de hardware y software de Apollo según la documentación oficial.}
 \end{table}
 
-\subsection{Proceso de Compilación}
+El módulo de percepción \textbf{requiere GPU obligatoriamente}: sin GPU compatible, Apollo se ejecuta sin percepción. Esto convierte cualquier prueba o iteración local en un compromiso de \textit{setup} mucho más exigente que el del problema que se quiere resolver.
 
-La compilación de Apollo involucra:
-\begin{enumerate}
-    \item Descargar imagen Docker ($\sim$15 GB)
-    \item Configurar container con NVIDIA runtime
-    \item Compilar todo el sistema (30+ minutos en hardware típico)
-    \item Resolver dependencias de Bazel (sistema de build)
-\end{enumerate}
+\subsection{Sistema de Build Bazel}
 
-\subsection{Errores Encontrados}
+Apollo utiliza Bazel como sistema de \textit{build}, con cinco variantes principales (\texttt{build\_dbg}, \texttt{build\_opt}, \texttt{build\_cpu}, \texttt{build\_gpu}, \texttt{build\_opt\_gpu}). Cada directorio contiene archivos \texttt{BUILD} con dependencias explícitas, y compilar el módulo de percepción completo toma del orden de 2--4\,horas en hardware típico. Cualquier ajuste implicaba un ciclo de recompilación significativo.
 
-Durante los intentos de recorte, se encontraron múltiples errores:
+\subsection{Setup Estimado}
 
-\begin{itemize}
-    \item Errores crípticos de Bazel al remover dependencias
-    \item Conflictos de versiones entre librerías internas
-    \item Problemas de linking al intentar compilar módulos aislados
-    \item Errores de runtime por falta de configuraciones de CyberRT
-\end{itemize}
+Sumando todos los pasos necesarios para llegar a ejecutar siquiera el TLR dentro de Apollo:
 
-\section{Tiempo Invertido}
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Tarea} & \textbf{Tiempo estimado} \\
+\hline
+Clonar repositorio ($\sim$2\,GB) & 10--30\,min \\
+Instalar Docker / NVIDIA Container Toolkit & 1--2\,h \\
+Configurar CUDA, cuDNN, TensorRT & 1--2\,h \\
+Compilar Apollo completo (\texttt{build\_opt\_gpu}) & 2--4\,h \\
+Entender CyberRT (suficiente para debuggear) & 1--2\,semanas \\
+Entender la estructura del módulo de percepción & 1--2\,semanas \\
+Extraer el módulo de \textit{traffic light} & 2--4\,semanas \\
+Depurar dependencias rotas tras el recorte & indefinido \\
+\hline
+\textbf{Total} & \textbf{1--2 meses} (mínimo) \\
+\hline
+\end{tabular}
+\caption{Tiempo estimado de \textit{setup} para el camino de recorte.}
+\end{table}
 
-Se invirtieron varias semanas intentando:
-\begin{itemize}
-    \item Configurar el ambiente de desarrollo
-    \item Entender el sistema de build
-    \item Identificar y remover dependencias
-    \item Resolver errores de compilación
-\end{itemize}
+\section{Decisión de Cambiar de Estrategia}
 
-Sin lograr una versión ejecutable del módulo TLR aislado.
+El balance fue claro: el esfuerzo de configuración era desproporcionado al objetivo. Conocer CyberRT en profundidad, dominar Bazel y depurar dependencias de hardware aporta poco al testing del TLR, que es lo que nos interesaba. Más aún: aunque hubiéramos llegado a una versión ejecutable, todavía estaría enredada en infraestructura que no se quería mantener.
 
-\section{Razones del Fracaso}
+Se descartó la estrategia de recorte y se adoptó la de \textit{aislamiento por reconstrucción}: tomar el código original como especificación, no como base, y construir desde cero un módulo equivalente en un entorno simple. La elección de Python obedeció a comodidad de prototipado y al ecosistema de herramientas (PyTorch, NumPy, \textit{matplotlib}, OpenCV) que facilitaban la iteración. No es un punto del enfoque: si la comodidad hubiera estado en otro lado, el aislamiento podría haberse hecho en otro lenguaje sin cambiar la idea.
 
-\begin{enumerate}
-    \item \textbf{Acoplamiento estrecho:} El código de Apollo está diseñado para funcionar como un sistema integrado, no como módulos independientes
-
-    \item \textbf{CyberRT como dependencia central:} El framework de mensajería está entrelazado con toda la lógica de negocio
-
-    \item \textbf{Falta de documentación:} No hay guías para extraer módulos individuales
-
-    \item \textbf{Complejidad del build:} Bazel hace difícil entender qué dependencias son realmente necesarias
-\end{enumerate}
-
-\section{Lección Aprendida}
-
-Esta experiencia motivó el cambio de estrategia hacia la reimplementación. La lección principal fue:
-
-\textbf{Para sistemas legacy complejos con alto acoplamiento, reimplementar un subsistema desde cero puede ser más viable que intentar extraerlo del sistema original.}
-
-La reimplementación, aunque requiere más trabajo inicial de análisis, produce un artefacto mucho más manejable y comprensible.
-
-\section{Valor del Intento Fallido}
-
-Aunque el recorte no funcionó, el intento no fue tiempo perdido:
-
-\begin{itemize}
-    \item Reveló la complejidad real del sistema
-    \item Motivó la búsqueda de alternativas
-    \item Generó familiaridad inicial con el código de Apollo
-    \item Informó las decisiones de diseño de la reimplementación
-\end{itemize}
+Durante el período en que se intentó recortar Apollo, en paralelo se trabajó en entender el pipeline a nivel conceptual: las cinco etapas, qué hace cada una, qué dependencias tiene. Ese trabajo no se perdió: alimentó directamente la fase de reconstrucción y constituye buena parte del contenido del Capítulo~\ref{cap:analisis_apollo}.

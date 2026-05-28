@@ -1,0 +1,458 @@
+\chapter{Funcionamiento del Módulo TLR de Apollo}
+\label{cap:funcionamiento_tlr}
+
+Este capítulo funciona como referencia técnica del módulo TLR original. Mientras el Capítulo~\ref{cap:analisis_apollo} presentó el pipeline a alto nivel para justificar las decisiones de aislamiento, aquí se describe en detalle qué hace cada una de las cinco etapas: qué transformaciones aplica, qué sub-algoritmos invoca, con qué parámetros, y con qué reglas de decisión. Toda la información proviene del análisis estático del código fuente de Apollo, con referencias a los archivos y líneas relevantes.
+
+El capítulo sigue el mismo orden del pipeline: modelos pre-entrenados, preprocesamiento, detección, asignación, reconocimiento y \textit{tracking}. Cierra con una tabla resumen de todos los parámetros numéricos.
+
+\section{Modelos Pre-entrenados}
+
+El TLR utiliza cuatro modelos pre-entrenados en formato Caffe, todos parte del repositorio de Apollo. Tres de ellos están especializados por orientación del semáforo.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|l|p{4.5cm}|c|c|}
+\hline
+\textbf{Modelo} & \textbf{Archivo} & \textbf{Propósito} & \textbf{Input} & \textbf{Output} \\
+\hline
+Detector & \texttt{tl.torch} & Detectar semáforos en ROIs & 270$\times$270$\times$3 & \textit{bboxes} + tipo \\
+\hline
+Recognizer vertical & \texttt{vert.torch} & Clasificar color (semáforos verticales) & 96$\times$32$\times$3 & [B, R, Y, G] \\
+\hline
+Recognizer horizontal & \texttt{hori.torch} & Clasificar color (semáforos horizontales) & 32$\times$96$\times$3 & [B, R, Y, G] \\
+\hline
+Recognizer \textit{quad} & \texttt{quad.torch} & Clasificar color (arreglo $2\times2$) & 64$\times$64$\times$3 & [B, R, Y, G] \\
+\hline
+\end{tabular}
+\caption{Modelos pre-entrenados del TLR. La salida [B, R, Y, G] representa probabilidades de \textit{black}, \textit{red}, \textit{yellow}, \textit{green}. Los recognizers tienen pesos distintos pero la misma arquitectura general: 5 capas convolucionales con \textit{batch normalization}, \textit{pooling} y una capa \textit{fully-connected} final.}
+\end{table}
+
+El detector sigue una arquitectura tipo \textit{Faster R-CNN} con \textit{Region Proposal Network} (RPN) y \textit{ROI Pooling} basado en DFMB-PSROIAlign. Su salida por detección tiene la forma \texttt{[img\_id, x1, y1, x2, y2, bg, vert, quad, hori]}: las coordenadas del \textit{bounding box} y un vector de probabilidades sobre cuatro clases (fondo, vertical, \textit{quad}, horizontal).
+
+\section{Etapa 1: Preprocesamiento (Region Proposal)}
+\label{sec:funcionamiento_preprocesamiento}
+
+\textbf{Archivos fuente:} \texttt{traffic\_light\_region\_proposal\_component.cc}, \texttt{tl\_preprocessor.cc}, \texttt{multi\_camera\_projection.cc}, \texttt{cropbox.cc}.
+
+\textbf{Entrada:} \textit{frame} de cámara (típicamente 1920$\times$1080), pose 6DOF del vehículo y HD-Map de la zona.
+
+\textbf{Salida:} M objetos \texttt{TrafficLight} con \texttt{projection\_roi} 2D calculado y \texttt{crop\_roi} expandido para el detector.
+
+El preprocesamiento se ejecuta en cinco pasos.
+
+\subsection{Paso 1: Query al HD-Map}
+
+A partir de la pose del vehículo, el componente consulta al \textit{map module} todos los \texttt{Signal}s dentro de un radio de aproximadamente 150\,m. Cada \texttt{Signal} es un objeto del HD-Map con la siguiente estructura conceptual:
+
+\begin{codesnippet}
+\begin{verbatim}
+Signal {
+  id: "signal_12345"
+  boundary: {
+    point[0..3]: (x, y, z)  // 4 esquinas del rectangulo 3D
+  }
+  type: MIX_3_VERTICAL      // Tipo del semaforo
+  stop_line: [...]
+  overlap_id: ["lane_123"]
+}
+\end{verbatim}
+\end{codesnippet}
+
+Las coordenadas \texttt{boundary} están en el sistema de coordenadas mundial (metros absolutos). El \texttt{id} es estable: identifica al mismo semáforo físico en cualquier consulta posterior.
+
+\subsection{Paso 2: Creación de Objetos TrafficLight}
+
+Para cada \texttt{Signal} retornado, el componente crea un objeto \texttt{TrafficLight} (estructura interna del pipeline) que arrastrará el \texttt{signal\_id} y la información geométrica a través de las etapas siguientes.
+
+\subsection{Paso 3: Proyección 3D $\to$ 2D}
+
+Las cuatro esquinas 3D del \texttt{boundary} se transforman al sistema de coordenadas de la cámara (transformación mundo$\to$cámara, \texttt{c2w}) y luego se proyectan al plano de imagen 2D usando los parámetros de calibración (matriz intrínseca y modelo de distorsión Brown).
+
+El resultado es una \texttt{projection\_roi}: un rectángulo en píxeles de imagen, definido por \texttt{[x, y, width, height]}, que indica dónde se espera ver al semáforo. Por la precisión del HD-Map ($\pm$5\,cm) y la calidad de calibración, esta \texttt{projection\_roi} puede no estar perfectamente alineada con el semáforo real; el factor de expansión del Paso 5 absorbe ese error.
+
+\subsection{Paso 4: Selección de Cámara}
+
+Si el vehículo tiene varias cámaras montadas (típicamente una \textit{telephoto} de 25\,mm con campo de visión estrecho pero alta resolución a distancia, y una \textit{wide-angle} de 6\,mm con campo amplio), el componente elige cuál usar:
+
+\begin{itemize}
+    \item Por defecto, prefiere la \textit{telephoto} (más resolución, mejor para semáforos lejanos).
+    \item Si alguna \texttt{projection\_roi} queda fuera del campo de visión o muy cerca del borde, cambia a la \textit{wide-angle}.
+\end{itemize}
+
+Esta lógica también mantiene poses \texttt{c2w} distintas por cámara.
+
+\subsection{Paso 5: Expansión a crop\_roi}
+
+Las dimensiones de la \texttt{projection\_roi} se expanden por un factor para generar la \texttt{crop\_roi} que efectivamente se le pasará al detector (\texttt{cropbox.cc:26-79}):
+
+\begin{equation}
+\texttt{resize} = \max\left(\texttt{crop\_scale} \cdot \max(\texttt{width}, \texttt{height}),\ \texttt{min\_crop\_size}\right)
+\end{equation}
+
+con \texttt{crop\_scale}~$=2.5$ y \texttt{min\_crop\_size}~$=270$ píxeles. La \texttt{crop\_roi} resultante es siempre \textbf{cuadrada} y se centra en el centro de la \texttt{projection\_roi}.
+
+\textbf{Ejemplo numérico.} Si \texttt{projection\_roi}~$=$~\texttt{[850, 300, 40, 80]}: centro $(870, 340)$, $\max(40, 80) = 80$, $\texttt{resize} = \max(80 \cdot 2.5, 270) = 270$, por lo tanto $\texttt{crop\_roi} = \texttt{[735, 205, 270, 270]}$.
+
+\textbf{¿Por qué la expansión 2.5$\times$?} Compensa errores de pose ($\sim$10\,cm de GPS), errores de calibración y movimiento del vehículo entre \textit{frames}. Hace que el semáforo real prácticamente siempre quede contenido en la región que se le presenta al detector, aún si la proyección no fue perfecta.
+
+\subsection{Normalización}
+
+La región recortada se redimensiona a 270$\times$270 píxeles (interpolación bilineal) y se normaliza restando las medias por canal en orden BGR (\texttt{detection.cc}):
+
+\begin{equation}
+\texttt{normalized} = \texttt{pixel} - \texttt{means\_det}, \quad \texttt{means\_det} = [102.98,\ 115.95,\ 122.77]
+\end{equation}
+
+Este tensor es lo que finalmente entra al detector.
+
+\section{Etapa 2: Detección}
+\label{sec:funcionamiento_deteccion}
+
+\textbf{Archivo fuente:} \texttt{detection.cc} (428 líneas).
+
+\textbf{Entrada:} M \texttt{TrafficLight}s con \texttt{crop\_roi}, más la imagen completa.
+
+\textbf{Salida:} N detecciones post-NMS global (sin identidad), cada una con \textit{bounding box} y vector de probabilidades.
+
+\subsection{Procesamiento Serial por Projection}
+
+A diferencia de muchos pipelines de detección modernos, Apollo procesa las \texttt{crop\_roi}s en serie, una por una, no en \textit{batch}. Esto simplifica el manejo de coordenadas (cada inferencia es independiente) a cambio de costo computacional, y constituye un \textit{bottleneck} señalado en el código.
+
+Para cada \texttt{crop\_roi}:
+
+\begin{enumerate}
+    \item Se extrae la región de la imagen completa.
+    \item Se redimensiona a 270$\times$270 si es necesario.
+    \item Se normaliza (medias BGR de arriba).
+    \item Se invoca el detector. La red devuelve un conjunto de propuestas con \textit{score}, \textit{bounding box} y probabilidades por clase.
+\end{enumerate}
+
+\subsection{Triple NMS}
+
+El detector aplica NMS (\textit{Non-Maximum Suppression}) en tres niveles, cada uno con un umbral distinto:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|c|l|}
+\hline
+\textbf{Nivel} & \textbf{IoU} & \textbf{Dónde se aplica} \\
+\hline
+NMS RPN & 0.7 & Dentro de la \textit{Region Proposal Network} \\
+\hline
+NMS RCNN & 0.5 & Dentro de la cabeza \textit{Fast R-CNN} \\
+\hline
+NMS Global & 0.6 & Sobre todas las detecciones combinadas (\texttt{detection.cc:381-390}) \\
+\hline
+\end{tabular}
+\caption{Tres niveles de NMS en la etapa de detección.}
+\end{table}
+
+El NMS global se aplica después de combinar las detecciones de todas las \texttt{crop\_roi}s. El código original ordena los \textit{scores} en orden ascendente y procesa desde el final (\texttt{.back()}); el efecto equivale a procesar el \textit{score} mayor primero, como en una implementación descendente convencional.
+
+\subsection{SelectOutputBoxes y Procesamiento}
+
+Para cada detección de la red, el código (\texttt{detection.cc}, función \texttt{SelectOutputBoxes}):
+
+\begin{enumerate}
+    \item Calcula el \textit{score} máximo entre \texttt{[bg, vert, quad, hori]}.
+    \item Si \texttt{bg} es el máximo, descarta la detección como fondo.
+    \item Si no, determina el tipo (\texttt{detect\_class\_id}) por \textit{argmax}.
+    \item Restaura las coordenadas del \textit{bounding box} al sistema de la imagen original (deshace el redimensionado a 270$\times$270 y suma el \textit{offset} de la \texttt{crop\_roi}).
+\end{enumerate}
+
+\subsection{Filtros de Validación Implícitos}
+
+Apollo aplica algunos filtros adicionales sobre las detecciones (algunos heredados de la red, otros del código \texttt{cropbox.cc}):
+
+\begin{itemize}
+    \item Área $> 0$ (descarta \textit{bounding boxes} degenerados).
+    \item Dentro de la región válida de la imagen (\texttt{OutOfValidRegion}).
+\end{itemize}
+
+El resto de los filtros (tamaño mínimo/máximo, \textit{aspect ratio}, confianza mínima) no aparecen explícitos en el código original como umbrales aislados; surgen como consecuencia de la arquitectura de la red.
+
+\subsection{Forma de la Salida}
+
+Cada detección final tiene la forma:
+
+\begin{codesnippet}
+\begin{verbatim}
+TrafficLight {  // Sin identidad (id="")
+  region.detection_roi: [x1, y1, x2, y2]      // Bbox en imagen original
+  region.detect_class_id: TL_VERTICAL_CLASS   // 1=vert, 2=quad, 3=hori
+  region.detect_score: 0.92                   // Score maximo del bbox
+  region.is_detected: true
+}
+\end{verbatim}
+\end{codesnippet}
+
+Las detecciones no llevan \texttt{signal\_id}: son simplemente salidas de la red. La identidad se asigna en la etapa siguiente.
+
+\section{Etapa 3: Asignación (Algoritmo Húngaro)}
+\label{sec:funcionamiento_asignacion}
+
+\textbf{Archivos fuente:} \texttt{select.cc} (133 líneas), \texttt{hungarian\_optimizer.h}.
+
+\textbf{Problema:} ¿Cómo asociar las N detecciones de la red (sin identidad) con los M semáforos del HD-Map (con identidad) de forma óptima?
+
+\textbf{Salida:} K asignaciones 1-to-1, con $K \le \min(M, N)$.
+
+\subsection{Matriz de Costos}
+
+Se construye una matriz $M \times N$. Para cada par (\texttt{hdmap}[i], \texttt{detection}[j]) se calcula un \textit{score} combinado.
+
+\textbf{Score de distancia (gaussiana 2D, $\sigma = 100$):}
+
+\begin{equation}
+\texttt{distance\_score} = \exp\!\left(-\tfrac{1}{2}\left(\tfrac{\Delta x}{\sigma_x}\right)^2 - \tfrac{1}{2}\left(\tfrac{\Delta y}{\sigma_y}\right)^2\right), \quad \sigma_x = \sigma_y = 100.0
+\end{equation}
+
+donde $\Delta x = c_x^{\text{det}} - c_x^{\text{proj}}$ y $\Delta y = c_y^{\text{det}} - c_y^{\text{proj}}$ son las diferencias entre los centros de la detección y de la \texttt{projection\_roi}, en píxeles.
+
+\textbf{Score de detección (con \textit{clip} a 0.9):}
+
+\begin{equation}
+\texttt{detection\_score} = \min(\texttt{detect\_score},\ 0.9)
+\end{equation}
+
+El \textit{clip} impide que detecciones con \textit{score} altísimo (cerca de 1.0) dominen completamente la combinación.
+
+\textbf{Combinación ponderada:}
+
+\begin{equation}
+\texttt{cost}[i, j] = 0.7 \cdot \texttt{distance\_score} + 0.3 \cdot \texttt{detection\_score}
+\end{equation}
+
+\textbf{Penalización espacial:}
+
+\begin{codesnippet}
+\begin{verbatim}
+// select.cc:58-73
+if ((detection_roi & crop_roi) != detection_roi) {
+    // La deteccion no esta contenida en el crop_roi de la projection
+    costs[i, j] = 0.0;
+}
+\end{verbatim}
+\end{codesnippet}
+
+Si la detección está fuera del \texttt{crop\_roi} de la \textit{projection}, el costo se fuerza a 0. Esto evita asignaciones absurdas a larga distancia.
+
+\subsection{Ponderación 70/30: ¿Por qué?}
+
+La elección 70\% distancia, 30\% confianza significa que Apollo confía más en la geometría del HD-Map (precisión $\pm$5\,cm) que en el \textit{score} de la red. Una detección cercana con \textit{score} 0.70 le gana a una detección lejana con \textit{score} 0.95 si la diferencia de distancia compensa la de confianza. Esta es una decisión de diseño no documentada que el análisis del código permitió extraer.
+
+\subsection{Algoritmo Húngaro}
+
+Sobre la matriz de costos se ejecuta el algoritmo húngaro para encontrar la asignación 1-to-1 que maximiza la suma de costos. Apollo lo implementa en \texttt{hungarian\_optimizer.h} en seis pasos: cubrir columnas, encontrar \textit{primes}, construir \textit{augmenting paths} y aplicar la mejora. El detalle clásico del algoritmo no se reproduce aquí; lo relevante es que la salida es óptima sobre la matriz construida.
+
+\subsection{Post-procesamiento 1-to-1}
+
+Tras ejecutar el algoritmo, el código aplica un post-procesamiento con \textit{flags} \texttt{is\_selected} para garantizar que cada detección se asigne a lo sumo a una \texttt{projection} y viceversa. Los datos de la detección (\textit{bounding box}, tipo, \textit{score}) se copian al objeto \texttt{hdmap\_light} correspondiente, preservando su \texttt{signal\_id}.
+
+\section{Etapa 4: Reconocimiento}
+\label{sec:funcionamiento_reconocimiento}
+
+\textbf{Archivos fuente:} \texttt{classify.cc} (175 líneas), \texttt{recognition.cc} (82 líneas).
+
+\textbf{Entrada:} M \texttt{TrafficLight}s (algunos con \texttt{is\_detected = true}, otros sin detección asignada) y la imagen completa.
+
+\textbf{Salida:} para cada \texttt{TrafficLight}, un color clasificado y una confianza.
+
+\subsection{Caso NO Detectado}
+
+Para los \texttt{TrafficLight}s sin detección asignada (\texttt{is\_detected = false}), el color se fija directamente a \texttt{UNKNOWN} sin invocar a ningún clasificador.
+
+\subsection{Selección del Clasificador}
+
+Para los detectados, se elige el clasificador según \texttt{detect\_class\_id}:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|c|l|c|c|}
+\hline
+\textbf{Tipo} & \textbf{Clasificador} & \textbf{Input shape} & \textbf{Threshold} \\
+\hline
+Vertical (1) & \texttt{classify\_vertical\_} (\texttt{vert.torch}) & 96$\times$32 & 0.5 \\
+\hline
+\textit{Quad} (2) & \texttt{classify\_quadrate\_} (\texttt{quad.torch}) & 64$\times$64 & 0.5 \\
+\hline
+Horizontal (3) & \texttt{classify\_horizontal\_} (\texttt{hori.torch}) & 32$\times$96 & 0.5 \\
+\hline
+\end{tabular}
+\caption{Clasificadores por orientación detectada.}
+\end{table}
+
+\subsection{Preprocesamiento del Recognizer}
+
+Para cada detección:
+
+\begin{enumerate}
+    \item Se recorta el \texttt{detection\_roi} de la imagen original.
+    \item Se redimensiona al \textit{shape} esperado por el clasificador (96$\times$32, 64$\times$64 o 32$\times$96).
+    \item Se aplica normalización con medias BGR distintas a las del detector y un factor de escala:
+\end{enumerate}
+
+\begin{equation}
+\texttt{normalized} = (\texttt{pixel} - \texttt{means\_rec}) \cdot \texttt{scale},\quad
+\texttt{means\_rec} = [66.56,\ 66.58,\ 69.06],\ \texttt{scale} = 0.01
+\end{equation}
+
+\subsection{Inferencia y Prob2Color}
+
+El clasificador devuelve un vector de cuatro probabilidades, una por estado: \texttt{[black, red, yellow, green]}. La regla \texttt{Prob2Color} (\texttt{recognition.cc:48-65}) decide el color final:
+
+\begin{codesnippet}
+\begin{verbatim}
+if (*max_prob > classify_threshold_) {  // 0.5
+    color = static_cast<TLColor>(
+        std::distance(prob.begin(), max_prob));
+} else {
+    color = TLColor::TL_BLACK;
+}
+\end{verbatim}
+\end{codesnippet}
+
+Si la probabilidad máxima supera 0.5, se acepta la clase con mayor probabilidad. Si no, se fuerza a \texttt{BLACK} (apagado). El mapeo del índice al color es \texttt{[BLACK, RED, YELLOW, GREEN]}.
+
+\subsection{Voting por semantic\_id}
+
+El código de \texttt{recognition.cc} incluye una fase de \textit{voting} dentro del grupo de semáforos que comparten \texttt{semantic\_id}: si la mayoría del grupo ve un color, se ajusta a los disidentes. Como se mencionó en el Capítulo~\ref{cap:analisis_apollo}, \texttt{semantic\_id} está hardcodeado a 0 para todos los semáforos, así que el \textit{voting} en la práctica opera sobre un solo elemento por grupo y no tiene efecto.
+
+\section{Etapa 5: Tracking}
+\label{sec:funcionamiento_tracking}
+
+\textbf{Archivo fuente:} \texttt{semantic\_decision.cc} (295 líneas).
+
+\textbf{Entrada:} \texttt{TrafficLight}s con color reconocido (del paso anterior) y el historial acumulado de \textit{frames} previos.
+
+\textbf{Salida:} mismos \texttt{TrafficLight}s con \texttt{status.color} y \texttt{status.blink} revisados según reglas temporales.
+
+\subsection{Estructura del Historial}
+
+Apollo guarda el historial como un \texttt{std::vector<SemanticTable>}. Cada \texttt{SemanticTable} contiene el historial de un grupo identificado por una \textit{string} de la forma \texttt{"No\_semantic\_light\_\{signal\_id\}"}. La búsqueda es por iteración lineal $O(n)$ sobre el vector.
+
+\subsection{Ventana Temporal de 1.5\,s}
+
+La regla central del \textit{tracking} es la \textbf{ventana temporal de 1.5\,s}, controlada por el parámetro \texttt{revise\_time\_s = 1.5}. Para cada semáforo, se calcula $\Delta t$ desde el último \texttt{update}.
+
+\begin{itemize}
+    \item Si $\Delta t \leq 1.5$\,s: aplican todas las reglas de validación de transiciones.
+    \item Si $\Delta t > 1.5$\,s: se considera oclusión prolongada o pérdida del \textit{tracking}. El historial se resetea y se acepta el color actual sin validación.
+\end{itemize}
+
+Esta ventana permite que el sistema se recupere rápidamente después de una oclusión (un camión que pasa frente al semáforo, una sombra), pero conserva la validación durante operación normal.
+
+\subsection{Regla 1: GREEN $\to$ YELLOW $\to$ RED}
+
+Una de las decisiones de diseño más informativas se encuentra en las líneas 2414--2446 de \texttt{semantic\_decision.cc}:
+
+\begin{codesnippet}
+\begin{verbatim}
+// semantic_decision.cc:2414-2446 (resumido)
+if (color == YELLOW && iter->color == RED) {
+    ReviseLights(lights, iter->color);
+    // Mantiene RED por seguridad
+}
+\end{verbatim}
+\end{codesnippet}
+
+\textbf{Justificación en comentario del código:}
+\begin{quote}
+``\textit{Because of the time sequence, yellow only exists after green and before red. Any yellow after red is reset to red for the sake of safety until green displays.}''
+\end{quote}
+
+La secuencia real de un semáforo es GREEN $\to$ YELLOW $\to$ RED $\to$ GREEN $\to \cdots$. Cualquier YELLOW visto después de RED se considera un error de clasificación o un caso adversario, y se fuerza a RED por seguridad. La regla es asimétrica: YELLOW después de GREEN se acepta sin problema.
+
+\subsection{Regla 2: BLACK con Histéresis}
+
+Si el color actual es BLACK y el último color conocido era un color encendido (RED/YELLOW/GREEN), no se aplica el cambio inmediatamente: se mantiene el color previo. Solo después de \texttt{hysteretic\_threshold} ($= 1$) confirmaciones consecutivas adicionales el sistema acepta la transición a BLACK.
+
+Esto evita que detecciones aisladas de ``apagado'' (oclusión parcial, glare, falso negativo) destruyan información que el \textit{tracking} ya tenía consolidada.
+
+\subsection{Regla 3: Detección de Blink}
+
+La detección de parpadeo opera \textbf{solo en verde}. La condición es:
+
+\begin{codesnippet}
+\begin{verbatim}
+// Patron: BRIGHT -> DARK (>0.55s) -> BRIGHT
+if (time_stamp - last_bright > blink_threshold &&
+    last_dark > last_bright) {
+    blink = true;
+}
+\end{verbatim}
+\end{codesnippet}
+
+con \texttt{blink\_threshold\_s = 0.55}. Se considera \textit{blink} cuando el semáforo estaba en verde (\textit{bright}), pasó por un período oscuro de al menos 0.55\,s y volvió a verde. El uso típico es semáforos con flechas verdes intermitentes que permiten giros.
+
+\textbf{Importante:} esta detección está restringida al verde por una razón funcional: el verde parpadeante es una indicación de cambio inminente a amarillo, información relevante para la planificación del vehículo. El rojo y el amarillo no producen \textit{blink flag}.
+
+\subsection{Regla 4: Reset por Ventana Expirada}
+
+Como se mencionó arriba, si pasaron más de 1.5\,s desde el último \texttt{update} para un \texttt{signal\_id} dado, el historial se resetea por completo. El color actual se acepta sin validar transiciones, y a partir del próximo \textit{frame} el \textit{tracking} arranca de nuevo desde ese estado.
+
+\section{Resumen de Parámetros}
+
+La Tabla~\ref{tab:parametros} agrupa todos los parámetros numéricos del módulo, con su archivo fuente y propósito.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{|l|c|l|p{4.7cm}|}
+\hline
+\textbf{Parámetro} & \textbf{Valor} & \textbf{Archivo} & \textbf{Propósito} \\
+\hline
+\multicolumn{4}{|l|}{\textit{Preprocesamiento}} \\
+\hline
+\texttt{query\_radius} & 150\,m & region\_proposal\_component.cc & Radio de query al HD-Map \\
+\texttt{crop\_scale} & 2.5 & cropbox.cc & Expansión de la \texttt{projection\_roi} \\
+\texttt{min\_crop\_size} & 270\,px & cropbox.cc & Tamaño mínimo del \textit{crop} \\
+\texttt{means\_det} BGR & [102.98, 115.95, 122.77] & detection.cc & Medias para normalización del detector \\
+\hline
+\multicolumn{4}{|l|}{\textit{Detección}} \\
+\hline
+\texttt{input\_size} & 270$\times$270 & detection.cc & Resolución de entrada al detector \\
+\texttt{nms\_rpn} & 0.7 & RPN interno & IoU \textit{threshold} en RPN \\
+\texttt{nms\_rcnn} & 0.5 & RCNN interno & IoU \textit{threshold} en RCNN \\
+\texttt{nms\_global} & 0.6 & detection.cc:381-390 & IoU \textit{threshold} global \\
+\hline
+\multicolumn{4}{|l|}{\textit{Asignación}} \\
+\hline
+\texttt{distance\_weight} & 0.7 & select.cc & Peso de distancia en costo combinado \\
+\texttt{confidence\_weight} & 0.3 & select.cc & Peso de confianza en costo combinado \\
+\texttt{gaussian\_sigma} & 100.0 & select.cc & $\sigma$ del \textit{score} gaussiano 2D \\
+\texttt{max\_detection\_score} & 0.9 & select.cc & \textit{Clip} máximo del \textit{score} \\
+\hline
+\multicolumn{4}{|l|}{\textit{Reconocimiento}} \\
+\hline
+\texttt{vert\_shape} & 96$\times$32 & classify.cc & Input del recognizer vertical \\
+\texttt{hori\_shape} & 32$\times$96 & classify.cc & Input del recognizer horizontal \\
+\texttt{quad\_shape} & 64$\times$64 & classify.cc & Input del recognizer \textit{quad} \\
+\texttt{means\_rec} BGR & [66.56, 66.58, 69.06] & classify.cc & Medias para normalización de recognizers \\
+\texttt{scale\_factor} & 0.01 & classify.cc & Escala post-normalización \\
+\texttt{classify\_threshold} & 0.5 & recognition.cc:48-65 & Umbral en \texttt{Prob2Color} \\
+\hline
+\multicolumn{4}{|l|}{\textit{Tracking}} \\
+\hline
+\texttt{revise\_time\_s} & 1.5\,s & semantic\_decision.cc & Ventana temporal de validación \\
+\texttt{blink\_threshold\_s} & 0.55\,s & semantic\_decision.cc & Umbral para detectar \textit{blink} \\
+\texttt{hysteretic\_threshold} & 1 & semantic\_decision.cc & Frames para aceptar transición a BLACK \\
+\hline
+\end{tabular}
+\caption{Parámetros numéricos del módulo TLR de Apollo, agrupados por etapa.}
+\label{tab:parametros}
+\end{table}
+
+\section{Resumen}
+
+Este capítulo describió el funcionamiento técnico de cada una de las cinco etapas del módulo TLR de Apollo:
+
+\begin{itemize}
+    \item \textbf{Preprocesamiento}: \textit{query} al HD-Map en un radio de 150\,m, proyección 3D$\to$2D con calibración de cámara, selección de cámara, expansión 2.5$\times$ de la \texttt{projection\_roi} con mínimo 270\,px, y normalización con medias BGR específicas.
+    \item \textbf{Detección}: procesamiento serial \textit{crop} por \textit{crop}, detector estilo \textit{Faster R-CNN} con triple NMS (0.7 / 0.5 / 0.6), \textit{output} con \textit{score}, \textit{bbox} y vector de probabilidades sobre cuatro clases.
+    \item \textbf{Asignación}: matriz de costos con \textit{score} gaussiano de distancia ($\sigma = 100$) y \textit{score} de confianza con \textit{clip} 0.9, ponderación 70/30 (distancia/confianza), penalización a 0 fuera del \texttt{crop\_roi}, y algoritmo húngaro seguido de un post-procesamiento 1-to-1.
+    \item \textbf{Reconocimiento}: clasificador especializado según orientación, normalización con medias y \textit{scale} propios, y regla \texttt{Prob2Color} con umbral 0.5 que fuerza BLACK cuando la confianza es baja.
+    \item \textbf{Tracking}: historial por \texttt{signal\_id} con ventana temporal de 1.5\,s, regla de seguridad GREEN$\to$YELLOW$\to$RED, histéresis para BLACK, detección de \textit{blink} restringida al verde (0.55\,s) y \textit{reset} ante oclusiones prolongadas.
+\end{itemize}
+
+Con este nivel de detalle, queda explícito qué tiene que reproducir el módulo aislado para ser equivalente al original. El próximo capítulo describe cómo se construyó esa versión aislada: primero el intento fallido de recortar el código C++ original, después la implementación efectiva en Python, los cambios funcionales respecto al original, y los supuestos de equivalencia bajo los cuales aceptamos la fidelidad del aislamiento.

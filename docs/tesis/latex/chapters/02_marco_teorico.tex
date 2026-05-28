@@ -1,196 +1,157 @@
 \chapter{Marco Teórico}
 \label{cap:marco_teorico}
 
-Este capítulo presenta los conceptos necesarios para comprender el trabajo y todo lo que se conocía previamente sobre el sistema Apollo antes de realizar nuestro análisis.
+Este capítulo presenta los conceptos necesarios para comprender el trabajo y una presentación mínima del sistema Apollo. El detalle del módulo TLR ---sus etapas, parámetros y reglas--- se introduce de forma narrativa en el Capítulo~\ref{cap:analisis_apollo}, donde forma parte del proceso de análisis.
 
 \section{Conceptos de Testing}
 
 \subsection{Oracle-Based Testing}
 
-Un \textit{test oracle} es un mecanismo para determinar si un test ha pasado o fallado \cite{barr2015oracle}. En este trabajo, el sistema Apollo original actúa como oráculo: la reimplementación se considera correcta si produce los mismos resultados que Apollo para las mismas entradas.
+Un \textit{test oracle} es un mecanismo para determinar si un test ha pasado o fallado \cite{barr2015oracle}. En este trabajo, el sistema Apollo original actúa como oráculo: el módulo aislado se considera correcto si produce los mismos resultados que Apollo para las mismas entradas, dadas las mismas condiciones.
 
-\textbf{Limitación:} Este enfoque asume que Apollo es correcto. Si Apollo tiene bugs, la reimplementación los replicará.
+\textbf{Limitación:} este enfoque asume que Apollo es correcto. Si Apollo tiene bugs, el módulo aislado los replicará. La validez del oráculo es relativa: lo que se está validando es la \textit{equivalencia} con el sistema de referencia, no la corrección absoluta.
 
-\subsection{Testing de Caja Blanca vs Caja Negra}
+\subsection{Testing de Caja Blanca vs. Caja Negra}
 
-\textbf{Caja negra:} Diseñar tests solo basándose en la especificación de entrada/salida, sin conocer la implementación interna.
+\textbf{Caja negra:} diseñar tests basándose únicamente en la especificación de entrada/salida, sin conocer la implementación interna.
 
-\textbf{Caja blanca:} Diseñar tests aprovechando el conocimiento de la implementación interna: parámetros, thresholds, reglas de decisión, casos límite.
+\textbf{Caja blanca:} diseñar tests aprovechando el conocimiento de la implementación interna: parámetros, \textit{thresholds}, reglas de decisión, casos límite, ramas del flujo de control.
 
-Este trabajo argumenta que para sistemas ML complejos sin especificación formal, el testing de caja blanca es más efectivo porque permite diseñar tests que exploten el conocimiento interno del sistema.
+Este trabajo argumenta que para sistemas de \textit{machine learning} sin especificación formal, el testing de caja blanca es particularmente efectivo: permite diseñar tests que apuntan a comportamientos específicos de la implementación, que el testing de caja negra difícilmente encontraría de manera sistemática. El aislamiento del módulo es lo que vuelve viable este enfoque, al ofrecer un objeto manipulable cuyas tripas son accesibles.
 
 \subsection{Testing Exploratorio}
 
-El testing exploratorio consiste en diseñar y ejecutar tests de forma simultánea, basándose en el conocimiento adquirido durante el proceso. A diferencia del testing planificado, los tests se diseñan iterativamente a medida que se comprende mejor el sistema.
-
-Este enfoque es particularmente útil para sistemas ML donde el comportamiento correcto no está formalmente especificado.
+El testing exploratorio consiste en diseñar y ejecutar tests de forma simultánea, ajustando la estrategia con base en el conocimiento adquirido durante el proceso. A diferencia del testing planificado, los tests se diseñan iterativamente a medida que se comprende mejor el sistema. Este enfoque es particularmente útil para sistemas de \textit{machine learning} donde el comportamiento correcto no está formalmente especificado y donde cada ejecución revela nuevas hipótesis a probar.
 
 \section{Reverse Engineering de Software}
 
-El reverse engineering es el proceso de analizar un sistema para extraer sus especificaciones a partir del código fuente \cite{chikofsky1990reverse}.
+El \textit{reverse engineering} es el proceso de analizar un sistema para extraer sus especificaciones a partir del código fuente \cite{chikofsky1990reverse}.
 
 En este trabajo se aplicaron dos técnicas:
 
-\textbf{Análisis estático:} Examinar el código sin ejecutarlo para extraer parámetros, estructuras de datos, y lógica de decisión.
+\textbf{Análisis estático:} examinar el código sin ejecutarlo para extraer parámetros, estructuras de datos y lógica de decisión. Es la técnica predominante en el análisis del módulo TLR, ya que las dependencias de Apollo dificultan la ejecución del código original (ver Capítulo~\ref{cap:reimplementacion}).
 
-\textbf{Análisis dinámico:} Ejecutar el sistema con inputs conocidos para observar y validar el comportamiento.
+\textbf{Análisis dinámico:} ejecutar el sistema con \textit{inputs} conocidos para observar y validar el comportamiento. En este trabajo, el análisis dinámico se realizó sobre el módulo \textit{aislado}, no sobre el original, una vez que la versión aislada fue construida.
 
 \section{Componentes Técnicos}
 
 \subsection{Intersection over Union (IoU)}
 
-Métrica para medir solapamiento entre bounding boxes:
+Métrica para medir solapamiento entre \textit{bounding boxes}:
 
 \begin{equation}
 IoU(A, B) = \frac{|A \cap B|}{|A \cup B|}
 \end{equation}
 
-Se usa en Non-Maximum Suppression (NMS) para eliminar detecciones duplicadas.
+Se usa en \textit{Non-Maximum Suppression} (NMS) para eliminar detecciones duplicadas que se solapan por encima de un umbral.
 
 \subsection{Algoritmo Húngaro}
+\label{sec:algoritmo_hungaro}
 
-El algoritmo húngaro \cite{kuhn1955hungarian} resuelve el problema de asignación óptima. En el contexto de detección de semáforos, se usa para asignar detecciones a regiones de interés conocidas (projection boxes), minimizando un costo que combina distancia espacial y confianza de detección.
+\subsubsection{El problema de asignación}
+
+El algoritmo húngaro \cite{kuhn1955hungarian} resuelve el \textbf{problema de asignación}: dado un conjunto de $n$ ``agentes'' y un conjunto de $n$ ``tareas'', y una matriz de costos $C \in \mathbb{R}^{n\times n}$ donde $C_{ij}$ es el costo (o beneficio) de asignarle la tarea $j$ al agente $i$, se busca una asignación uno-a-uno que minimice (o maximice) el costo total. Formalmente, se busca una permutación $\sigma$ de $\{1,\dots,n\}$ que minimice
+\[
+\sum_{i=1}^{n} C_{i,\sigma(i)}.
+\]
+La asignación es \textit{biyectiva}: cada agente recibe exactamente una tarea, y cada tarea es ejecutada por exactamente un agente. Para conjuntos de tamaños distintos $m\neq n$, la matriz se rellena con filas o columnas \textit{dummy} de costo neutro hasta hacerla cuadrada; las asignaciones contra \textit{dummies} se descartan al final.
+
+\subsubsection{Origen y nomenclatura}
+
+El método fue formulado por Harold W.\ Kuhn en 1955 \cite{kuhn1955hungarian}, basándose en trabajos previos de los matemáticos húngaros Dénes Kőnig y Jenő Egerváry, de donde proviene el nombre. En 1957, James Munkres demostró que el algoritmo termina en tiempo polinomial; por eso también se lo conoce como \textbf{algoritmo de Kuhn-Munkres} o, en implementaciones de ingeniería, simplemente como ``Munkres''. El archivo \texttt{hungarian\_optimizer.h} del código de Apollo y el archivo \texttt{hungarian\_optimizer.py} del módulo aislado se refieren a esta misma idea con los dos nombres usados de manera intercambiable.
+
+\subsubsection{Cómo funciona}
+
+La intuición detrás del algoritmo es que el problema no cambia si a una fila o columna entera de la matriz de costos se le suma o resta una constante: la asignación óptima sigue siendo la misma, aunque el valor total cambie. El algoritmo explota esta invariancia para transformar la matriz original en otra equivalente que tenga \textit{ceros suficientes} como para describir la solución óptima.
+
+El procedimiento clásico tiene seis pasos, repetidos hasta que se alcanza una asignación válida:
+
+\begin{enumerate}
+    \item \textbf{Reducción de filas:} a cada fila se le resta su elemento mínimo. Después de este paso, cada fila tiene al menos un cero.
+    \item \textbf{Reducción de columnas:} análogamente, a cada columna se le resta su mínimo.
+    \item \textbf{Cobertura mínima:} se cubre el conjunto de ceros de la matriz con el menor número posible de líneas (filas o columnas enteras). Si ese número es igual a $n$, los ceros ya son suficientes para describir una asignación óptima y el algoritmo termina.
+    \item \textbf{Ajuste de la matriz:} si la cobertura usó menos de $n$ líneas, se identifica el menor elemento no cubierto y se resta a todos los elementos no cubiertos, sumándoselo a los doblemente cubiertos. Esto preserva la equivalencia con la matriz original y crea nuevos ceros.
+    \item \textbf{Búsqueda de \textit{augmenting paths}:} a partir del estado actual, se busca un camino alternante de ceros que permita mejorar la asignación parcial.
+    \item \textbf{Extracción de la asignación:} cuando los ceros cubren la matriz con $n$ líneas, se eligen $n$ ceros independientes (uno por fila y por columna) y esos son los pares $(i, \sigma(i))$ de la asignación óptima.
+\end{enumerate}
+
+La complejidad del algoritmo es $O(n^3)$ en su versión clásica, lo cual es totalmente manejable para los tamaños típicos del problema de detección de semáforos (raramente más de 5 o 6 semáforos visibles a la vez).
+
+\subsubsection{Maximización vs.\ minimización}
+
+El algoritmo está formulado para \textit{minimizar} el costo total, pero el problema en detección de semáforos es de \textit{maximización} (queremos la asignación que maximice la suma de \textit{scores}). La conversión es trivial: si $S$ es la matriz de \textit{scores} y $S_{\max}$ es su máximo, se ejecuta el algoritmo sobre la matriz $C = S_{\max} - S$. La permutación óptima resultante es la misma, y el valor maximizado se reconstruye con $\sum S_{i,\sigma(i)} = n\cdot S_{\max} - \sum C_{i,\sigma(i)}$.
+
+\subsubsection{Uso en el módulo TLR}
+
+En el contexto de detección de semáforos, el algoritmo se usa para asignar las $N$ detecciones de la red neuronal a las $M$ regiones de interés conocidas (\textit{projection boxes}). El \textit{score} a maximizar combina proximidad espacial y confianza de la detección, con una ponderación específica que se detalla en el Capítulo~\ref{cap:funcionamiento_tlr}. El resultado es una correspondencia biyectiva entre detecciones y \textit{projection boxes} que el resto del pipeline trata como ``esta detección corresponde a este semáforo del HD-Map''.
 
 \subsection{Conversión Caffe a PyTorch}
 
-Apollo utiliza modelos en formato Caffe (framework legacy). La reimplementación requiere:
+Apollo utiliza modelos en formato Caffe (\textit{framework} legacy). La construcción de un módulo aislado en Python requiere:
 
 \begin{enumerate}
-    \item Parsear archivos \texttt{.prototxt} (definición de arquitectura)
-    \item Mapear capas Caffe a equivalentes PyTorch
-    \item Cargar pesos desde archivos \texttt{.caffemodel}
-    \item Validar equivalencia numérica de outputs
+    \item Parsear archivos \texttt{.prototxt} (definición de arquitectura).
+    \item Mapear capas Caffe a equivalentes en PyTorch.
+    \item Cargar pesos desde archivos \texttt{.caffemodel}.
+    \item Validar equivalencia numérica de \textit{outputs} capa por capa.
 \end{enumerate}
 
-\section{El Sistema Apollo}
+Esta conversión no introduce cambios funcionales: la arquitectura, los pesos y la aritmética son los mismos; sólo cambia el \textit{runtime} sobre el que se evalúa la red.
 
-Esta sección presenta todo lo que se conocía sobre Apollo \textbf{antes} de realizar nuestro análisis. La información proviene de documentación pública y del paper de FSE 2020 \cite{peng2020first}.
+\section{El Sistema Apollo: Presentación}
 
 \subsection{Visión General}
 
-Apollo es una plataforma open source para vehículos autónomos desarrollada por Baidu \cite{apollo_auto}. El sistema incluye módulos para:
+Apollo es una plataforma \textit{open source} para vehículos autónomos desarrollada por Baidu \cite{apollo_auto}. Integra módulos para:
 
 \begin{itemize}
-    \item \textbf{Percepción:} Detección de obstáculos, semáforos, carriles
-    \item \textbf{Predicción:} Predicción de trayectorias de otros vehículos
-    \item \textbf{Planificación:} Planificación de ruta y maniobras
-    \item \textbf{Control:} Control de actuadores del vehículo
+    \item \textbf{Percepción:} detección de obstáculos, semáforos, carriles.
+    \item \textbf{Predicción:} predicción de trayectorias de otros vehículos.
+    \item \textbf{Planificación:} planificación de ruta y maniobras.
+    \item \textbf{Control:} control de actuadores del vehículo.
 \end{itemize}
 
-\subsection{Módulo de Detección de Semáforos (TLR)}
-
-Según la documentación de Apollo, el módulo TLR es responsable de:
-
-\begin{itemize}
-    \item Detectar la presencia de semáforos en imágenes de cámara
-    \item Reconocer el estado actual (rojo, amarillo, verde, apagado)
-    \item Mantener tracking temporal de los semáforos
-\end{itemize}
-
-\subsubsection{Pipeline Documentado}
-
-La documentación de Apollo describe el siguiente pipeline:
-
-\begin{enumerate}
-    \item \textbf{Preprocessing:} Obtención de regiones de interés (projection boxes) a partir del HD-Map
-    \item \textbf{Detection:} Red neuronal para detectar semáforos dentro de las regiones
-    \item \textbf{Recognition:} Clasificadores para determinar el color del semáforo
-    \item \textbf{Tracking:} Mantenimiento de estados a lo largo del tiempo
-\end{enumerate}
-
-\subsubsection{Dependencia del HD-Map}
-
-Un aspecto importante documentado es que Apollo depende de mapas HD (High Definition Maps) para:
-
-\begin{itemize}
-    \item Conocer la ubicación 3D de semáforos en el mundo real
-    \item Proyectar estas ubicaciones a coordenadas 2D en la imagen de cámara
-    \item Identificar persistentemente cada semáforo mediante un ID único
-\end{itemize}
-
-Esto significa que Apollo no busca semáforos en toda la imagen, sino solo en regiones donde el HD-Map indica que debería haber semáforos.
-
-\subsection{Arquitectura de Software}
-
-Apollo utiliza:
-
-\begin{itemize}
-    \item \textbf{CyberRT:} Framework de mensajería propio para comunicación entre módulos
-    \item \textbf{Bazel:} Sistema de build
-    \item \textbf{Docker:} Containerización para deployment
-    \item \textbf{Caffe:} Framework de deep learning para los modelos
-\end{itemize}
-
-\subsection{Requisitos de Hardware}
-
-Según la documentación oficial:
-
-\begin{table}[H]
-\centering
-\begin{tabular}{|l|l|}
-\hline
-\textbf{Componente} & \textbf{Requisito} \\
-\hline
-CPU & 8+ cores \\
-RAM & 16 GB \\
-GPU & NVIDIA RTX 20xx+ \\
-OS & Ubuntu 18.04/20.04/22.04 \\
-CUDA & 11.8 \\
-Docker & $\geq$ 19.03 \\
-Espacio disco & $\sim$50 GB \\
-\hline
-\end{tabular}
-\caption{Requisitos de hardware/software de Apollo}
-\end{table}
-
-\subsection{Ubicación del Código TLR}
-
-El módulo TLR en Apollo está dividido en 4 carpetas dentro de \texttt{modules/perception/}:
-
-\begin{verbatim}
-modules/perception/
-├── traffic_light_region_proposal/  # Generación de ROIs desde HD-Map
-├── traffic_light_detection/        # Detección de semáforos en imagen
-├── traffic_light_recognition/      # Clasificación de color
-└── traffic_light_tracking/         # Tracking temporal y reglas
-\end{verbatim}
-
-Cada módulo tiene su propia estructura con archivos de configuración, código fuente, y tests.
+El sistema está construido sobre infraestructura propia: el \textit{framework} de mensajería \textbf{CyberRT}, el sistema de \textit{build} \textbf{Bazel}, contenedores Docker para \textit{deployment}, y el \textit{framework} de \textit{deep learning} Caffe para los modelos. Esta infraestructura es transversal a casi todos los módulos: un cambio o una ejecución parcial del sistema rara vez puede hacerse sin tocarla.
 
 \subsection{Paper de FSE 2020}
 
-El paper ``A First Look at the Integration of Machine Learning Models in Complex Autonomous Driving Systems'' \cite{peng2020first} analiza cómo se integran los modelos de ML en Apollo e identifica:
+El paper ``A First Look at the Integration of Machine Learning Models in Complex Autonomous Driving Systems'' \cite{peng2020first} analiza cómo se integran los modelos de \textit{machine learning} en Apollo e identifica:
 
 \begin{itemize}
-    \item \textbf{Acoplamiento estrecho:} Los componentes están fuertemente integrados
-    \item \textbf{Dependencias de hardware:} Muchos componentes requieren GPUs específicas
-    \item \textbf{Complejidad de configuración:} El despliegue requiere configuraciones extensas
+    \item \textbf{Acoplamiento estrecho:} los componentes están fuertemente integrados.
+    \item \textbf{Dependencias de hardware:} muchos componentes requieren GPUs específicas.
+    \item \textbf{Complejidad de configuración:} el despliegue requiere configuraciones extensas.
 \end{itemize}
 
-Este paper motivó la idea de que extraer y reimplementar un subsistema podría facilitar su testing.
+Este paper motivó la idea central del trabajo: si extraer y ejercitar un subsistema aislado puede facilitar su testing, vale la pena explorar la metodología sobre un módulo concreto.
 
-\section{Lo No Documentado}
+\subsection{El Módulo TLR como Caso de Estudio}
 
-Aunque la documentación de Apollo describe el pipeline a alto nivel, varios aspectos críticos \textbf{no están documentados}:
+El módulo TLR (\textit{Traffic Light Recognition}) de Apollo es responsable de detectar semáforos en imágenes de cámara, reconocer su estado actual y mantener \textit{tracking} temporal. A nivel macro, su pipeline incluye preprocesamiento de regiones de interés, una red de detección, una red de reconocimiento de color y una etapa de \textit{tracking} temporal con reglas de seguridad. El Capítulo~\ref{cap:analisis_apollo} presenta el módulo a través del análisis que se hizo de él, y el Capítulo~\ref{cap:funcionamiento_tlr} profundiza en el detalle técnico de cada etapa.
+
+\subsection{Lo No Documentado}
+
+Aunque la documentación oficial de Apollo describe el pipeline a alto nivel, varios aspectos críticos \textbf{no están documentados}:
 
 \begin{itemize}
-    \item Valores específicos de parámetros (thresholds, pesos, sigmas)
-    \item Reglas de seguridad del tracking temporal
-    \item Lógica de decisión en casos ambiguos
-    \item Justificación de decisiones de diseño
+    \item Valores específicos de parámetros (\textit{thresholds}, pesos, sigmas).
+    \item Reglas de seguridad del \textit{tracking} temporal.
+    \item Lógica de decisión en casos ambiguos.
+    \item Justificación de decisiones de diseño.
+    \item Funcionalidades diseñadas pero no efectivamente implementadas.
 \end{itemize}
 
-Estos aspectos solo se pueden descubrir mediante análisis del código fuente, lo cual es parte del trabajo de esta tesis.
+Estos aspectos solo se pueden descubrir mediante análisis del código fuente, lo cual constituye una parte central del trabajo de esta tesis.
 
 \section{Resumen}
 
 Este capítulo presentó:
 
 \begin{itemize}
-    \item Conceptos de testing relevantes: oracle-based testing, caja blanca vs caja negra, testing exploratorio
-    \item Técnicas de reverse engineering: análisis estático y dinámico
-    \item Componentes técnicos: IoU, algoritmo húngaro, conversión Caffe→PyTorch
-    \item Todo lo conocido públicamente sobre Apollo y su módulo TLR antes de nuestro análisis
+    \item Conceptos de testing relevantes: \textit{oracle-based testing}, caja blanca vs.\ caja negra, testing exploratorio.
+    \item Técnicas de \textit{reverse engineering}: análisis estático y análisis dinámico.
+    \item Componentes técnicos: IoU, algoritmo húngaro, conversión Caffe→PyTorch.
+    \item Una presentación mínima del sistema Apollo, suficiente para situar el caso de estudio.
 \end{itemize}
 
-El siguiente capítulo describe el proceso de análisis que realizamos para extraer la información no documentada y las decisiones que esto informó.
+El siguiente capítulo aborda el análisis del módulo TLR: las preguntas que guiaron el trabajo, cómo está construido el módulo dentro de Apollo a nivel narrativo, qué hallazgos del código fuente fueron determinantes, y qué decisiones de aislamiento se desprenden de ese análisis. El Capítulo~\ref{cap:funcionamiento_tlr} retoma luego el detalle técnico de cada una de sus etapas, y el Capítulo~\ref{cap:reimplementacion} describe la construcción del módulo aislado.

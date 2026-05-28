@@ -17,7 +17,7 @@
 
 \subsection{Sobre el Sistema Apollo}
 
-\textbf{Decisiones de diseño no documentadas.} El análisis reveló aspectos importantes no documentados: secuencia GREEN→YELLOW→RED, blink detection solo en verde, ponderación del húngaro 70/30.
+\textbf{Decisiones de diseño no documentadas.} El análisis reveló aspectos no documentados oficialmente: ponderación 70/30 del algoritmo húngaro, ventana temporal de 1.5\,s del \textit{tracking} con histéresis, y restricción del \textit{blink detection} al color verde con umbral de 0.55\,s. La secuencia de seguridad GREEN→YELLOW→RED, en cambio, sí está documentada \cite{apollo_tlr_docs}; lo que el análisis aportó es el conjunto completo de reglas que la rodean en la implementación.
 
 \textbf{Funcionalidad diseñada pero no implementada.} El semantic\_id y el voting entre semáforos del mismo cruce existen en el código pero nunca se ejecutan.
 

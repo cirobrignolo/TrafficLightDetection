@@ -1,0 +1,307 @@
+\chapter{Análisis del Módulo TLR}
+\label{cap:analisis_apollo}
+
+Este capítulo describe el proceso de análisis del módulo de detección de semáforos (\textit{Traffic Light Recognition}, TLR) de Apollo. El objetivo del análisis no fue documentar el módulo por sí mismo, sino reunir el conocimiento necesario para poder aislarlo: entender qué hace, cuáles son sus límites, qué necesita del resto del sistema y qué simplificaciones serían aceptables.
+
+El capítulo sigue ese orden. Primero plantea las preguntas que guiaron el análisis. Después responde a alto nivel cómo está organizado el módulo dentro de Apollo y qué hacen sus etapas, acompañado de un diagrama de bloques y un diagrama de secuencia con \textit{input}/\textit{output}. Luego presenta los hallazgos del código fuente que resultaron determinantes para el aislamiento. Y cierra con las decisiones de aislamiento que se desprenden de todo lo anterior. El detalle técnico de cómo funciona cada etapa internamente se posterga al Capítulo~\ref{cap:funcionamiento_tlr}, donde tiene espacio propio.
+
+\section{Preguntas que Guiaron el Análisis}
+\label{sec:preguntas_analisis}
+
+El análisis estuvo orientado por cuatro preguntas. Cada una apunta a una decisión concreta de aislamiento.
+
+\begin{enumerate}
+    \item \textbf{¿Cuál es el alcance funcional del módulo TLR?} \\
+    ¿Qué hace exactamente? ¿Cuáles son sus entradas y salidas? ¿De qué otros módulos depende para funcionar?
+
+    \item \textbf{¿Qué partes del código son esenciales y cuáles son accesorias?} \\
+    ¿Qué es lógica \textit{core} del TLR (decisiones, parámetros, modelos) y qué es infraestructura del entorno Apollo (CyberRT, Bazel, integración con otros módulos)? El aislamiento depende de poder hacer esta distinción.
+
+    \item \textbf{¿Qué parámetros y reglas de decisión utiliza el sistema?} \\
+    ¿Cuáles son los \textit{thresholds}, pesos y reglas de negocio que determinan el comportamiento observable? Estos son los que el módulo aislado debe reproducir.
+
+    \item \textbf{¿Qué simplificaciones podemos hacer sin afectar la lógica \textit{core}?} \\
+    ¿Qué dependencias podemos eliminar manteniendo equivalencia funcional? ¿Qué se puede reemplazar por una interfaz más simple sin perder la semántica del módulo?
+\end{enumerate}
+
+Las dos primeras preguntas delimitan qué entra al módulo aislado y qué queda afuera. La tercera define qué se debe preservar. La cuarta habilita la modularización: identifica qué piezas del entorno original pueden ser reemplazadas por equivalentes más simples sin que el comportamiento del módulo cambie.
+
+\section{El Módulo TLR dentro de Apollo}
+
+\subsection{Ubicación en el Código}
+
+El TLR no es un único componente monolítico, sino un conjunto de cuatro subcomponentes que viven en \texttt{modules/perception/} del repositorio de Apollo:
+
+\begin{verbatim}
+modules/perception/
+|-- traffic_light_region_proposal/  # Generacion de ROIs desde HD-Map
+|-- traffic_light_detection/        # Deteccion de semaforos en imagen
+|-- traffic_light_recognition/      # Clasificacion de color
+`-- traffic_light_tracking/         # Tracking temporal y reglas
+\end{verbatim}
+
+Cada subcomponente es un \textit{component} en el sentido de Apollo: tiene sus propios archivos de configuración (\texttt{.pb.txt}, \texttt{.proto}), sus reglas de \textit{build} para Bazel (\texttt{BUILD}), su descripción de despliegue (\texttt{cyberfile.xml}, \texttt{.dag}, \texttt{.launch}) y su código fuente. Los cuatro componentes se ejecutan en cadena dentro del proceso de percepción del vehículo, comunicándose a través del \textit{framework} de mensajería CyberRT.
+
+\subsection{Infraestructura de la que Depende}
+
+Para que los cuatro componentes funcionen, Apollo necesita además infraestructura que es transversal al sistema completo:
+
+\begin{itemize}
+    \item \textbf{CyberRT:} \textit{framework} de mensajería propio que orquesta la comunicación entre componentes a través de \textit{channels}. Sin CyberRT no hay forma estándar de pasar un \textit{frame} de la cámara al componente de detección.
+    \item \textbf{Map module:} acceso al HD-Map. El componente de \textit{region proposal} consulta el HD-Map en tiempo real para saber dónde hay semáforos cerca del vehículo.
+    \item \textbf{Perception common:} utilidades compartidas con el resto del módulo de percepción: \textit{inference engines}, transformaciones de coordenadas, primitivas geométricas.
+    \item \textbf{Modules common:} utilidades transversales del sistema (\textit{math}, \textit{configs}, \textit{logging}).
+    \item \textbf{Calibración de cámara:} parámetros intrínsecos y extrínsecos del vehículo que se usan para proyectar coordenadas 3D del mundo a píxeles de imagen.
+    \item \textbf{Caffe (vía libtorch):} \textit{framework} de \textit{deep learning} sobre el que corren los cuatro modelos del TLR. Requiere CUDA y una GPU NVIDIA específica.
+\end{itemize}
+
+El TLR no puede ejecutarse sin esta infraestructura; cualquier estrategia de aislamiento tiene que decidir qué se hace con ella.
+
+\section{Cómo Funciona el Módulo: Vista a Alto Nivel}
+
+\subsection{Las Cinco Etapas}
+
+El pipeline del TLR procesa cada \textit{frame} de la cámara en cinco etapas secuenciales:
+
+\begin{enumerate}
+    \item \textbf{Preprocesamiento (\textit{Region Proposal}).} A partir de la posición del vehículo y el HD-Map, calcula qué semáforos físicos deberían aparecer en la imagen y proyecta sus coordenadas 3D del mundo a regiones rectangulares 2D en la imagen (\textit{projection boxes}). También decide qué cámara usar cuando hay varias disponibles. Cada semáforo identificado mantiene un \textit{signal\_id} persistente proveniente del HD-Map.
+
+    \item \textbf{Detección.} Para cada \textit{projection box}, recorta una región expandida de la imagen y la pasa por una red convolucional (estilo \textit{Faster R-CNN}) que devuelve detecciones de semáforos con un \textit{bounding box} y un tipo (vertical, horizontal, \textit{quad}). Las detecciones no llevan identidad: son simplemente recuadros en la imagen.
+
+    \item \textbf{Asignación.} Vincula cada detección de la red con la \textit{projection box} que mejor le corresponde. Usa el algoritmo húngaro sobre una matriz de costos que combina proximidad espacial y confianza de detección. Su salida son pares ($i$, $j$) que dicen ``la \textit{projection box} $i$ corresponde a la detección $j$'', y por lo tanto a un \textit{signal\_id} concreto.
+
+    \item \textbf{Reconocimiento.} Para cada semáforo detectado, recorta el \textit{bounding box} de la detección y lo pasa por una de tres redes convolucionales especializadas (una por orientación: vertical, horizontal, \textit{quad}). La red devuelve probabilidades para cuatro estados: apagado (\textit{black}), rojo, amarillo y verde.
+
+    \item \textbf{Tracking.} Mantiene un historial por \textit{signal\_id} a través de los \textit{frames}. Aplica reglas de consistencia temporal y de seguridad: transiciones de color inválidas se corrigen, detecciones aisladas de ``apagado'' no destruyen el color anterior, y se detecta parpadeo en verde con una ventana temporal específica.
+\end{enumerate}
+
+La Figura~\ref{fig:pipeline_alto_nivel} muestra las cinco etapas como bloques. La Figura~\ref{fig:diagrama_secuencia} las muestra como un diagrama de secuencia donde cada flecha indica el \textit{input}/\textit{output} que pasa de una etapa a la siguiente.
+
+\subsection{Diagrama de Bloques}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=0.55cm,
+    block/.style={rectangle, draw, rounded corners, minimum width=8.5cm, minimum height=0.9cm, align=center, font=\small},
+    io/.style={rectangle, draw, dashed, rounded corners, minimum width=8.5cm, minimum height=0.8cm, align=center, font=\small\itshape},
+    arrow/.style={-{Latex[length=2.5mm]}, thick}
+]
+    \node[io] (in) {Frame de cámara + Pose del vehículo + HD-Map};
+    \node[block, below=of in] (preproc) {1. Preprocesamiento (\textit{Region Proposal})};
+    \node[block, below=of preproc] (det) {2. Detección};
+    \node[block, below=of det] (asg) {3. Asignación (algoritmo húngaro)};
+    \node[block, below=of asg] (rec) {4. Reconocimiento};
+    \node[block, below=of rec] (trk) {5. Tracking};
+    \node[io, below=of trk] (out) {Estados de semáforos con \textit{signal\_id} persistente};
+
+    \draw[arrow] (in) -- (preproc);
+    \draw[arrow] (preproc) -- (det);
+    \draw[arrow] (det) -- (asg);
+    \draw[arrow] (asg) -- (rec);
+    \draw[arrow] (rec) -- (trk);
+    \draw[arrow] (trk) -- (out);
+\end{tikzpicture}
+\caption{Pipeline del módulo TLR de Apollo: cinco etapas secuenciales que transforman un \textit{frame} de cámara más información geográfica en un conjunto de estados de semáforos identificados.}
+\label{fig:pipeline_alto_nivel}
+\end{figure}
+
+\subsection{Diagrama de Secuencia (Input/Output entre Etapas)}
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+    font=\small,
+    actor/.style={rectangle, draw, fill=gray!10, text width=2.1cm, minimum height=0.7cm, align=center, inner sep=3pt},
+    arrow/.style={-{Latex[length=2mm]}, thick},
+    msg/.style={font=\scriptsize, align=center}
+]
+    \node[actor] (env) at (0,0) {\scriptsize Cámara\\\scriptsize + HD-Map};
+    \node[actor] (p1) at (3,0) {Preprocesa-\\miento};
+    \node[actor] (p2) at (6,0) {Detección};
+    \node[actor] (p3) at (9,0) {Asignación};
+    \node[actor] (p4) at (12,0) {Reconoci-\\miento};
+    \node[actor] (p5) at (15,0) {Tracking};
+
+    \foreach \x in {0,3,6,9,12,15} {
+        \draw[dashed] (\x,-0.5) -- (\x,-9.5);
+    }
+
+    \node[msg, anchor=west] at (0.1,-1.0) {\textit{frame}, pose, \textit{signals} del HD-Map};
+    \draw[arrow] (0,-1.3) -- (3,-1.3);
+
+    \node[msg, anchor=west] at (3.1,-2.1) {M \textit{projection boxes} con \textit{signal\_id}};
+    \draw[arrow] (3,-2.4) -- (6,-2.4);
+
+    \node[msg, anchor=west] at (6.1,-3.2) {N detecciones (sin identidad)};
+    \draw[arrow] (6,-3.5) -- (9,-3.5);
+
+    \node[msg, anchor=west] at (3.1,-4.5) {(las M \textit{projection boxes} también)};
+    \draw[arrow] (3,-4.8) -- (8.95,-4.8);
+
+    \node[msg, anchor=west] at (9.1,-5.7) {K pares (\textit{proj\_idx}, \textit{det\_idx})};
+    \draw[arrow] (9,-6.0) -- (12,-6.0);
+
+    \node[msg, anchor=west] at (12.1,-7.0) {color por detección asignada};
+    \draw[arrow] (12,-7.3) -- (15,-7.3);
+
+    \node[msg, anchor=west] at (15.1,-8.2) {\textit{signal\_id} $\to$ (color revisado, \textit{blink})};
+    \draw[arrow] (15,-8.5) -- (16.8,-8.5);
+\end{tikzpicture}%
+}
+\caption{Diagrama de secuencia del pipeline TLR: cada flecha representa el dato que cruza de una etapa a la siguiente. Las cantidades $M$ (cuántos semáforos hay en el HD-Map a esa distancia), $N$ (cuántas detecciones produjo la red) y $K \le \min(M,N)$ (cuántas asignaciones encontró el húngaro) varían por \textit{frame}.}
+\label{fig:diagrama_secuencia}
+\end{figure}
+
+\subsection{Inputs y Outputs del Módulo Completo}
+
+Visto como caja, el módulo recibe:
+
+\begin{itemize}
+    \item Un \textit{frame} de cámara (uno por instante, en tiempo real).
+    \item La pose del vehículo en coordenadas del mundo.
+    \item Acceso al HD-Map para hacer consultas dentro de un radio dado (típicamente $\sim$150\,m).
+    \item Parámetros de calibración de las cámaras disponibles.
+\end{itemize}
+
+Y produce:
+
+\begin{itemize}
+    \item Un conjunto de semáforos identificados con \textit{signal\_id} persistente.
+    \item Para cada uno: el color reconocido (\textit{black}/red/yellow/green) y un \textit{flag} de \textit{blink} cuando aplica.
+\end{itemize}
+
+El \textit{signal\_id} persistente es lo que permite que la etapa de \textit{tracking} mantenga un historial coherente \textit{frame} a \textit{frame}: el mismo semáforo físico siempre se identifica con el mismo \textit{id}, aunque cambien sus píxeles en la imagen.
+
+\section{Hallazgos del Código Fuente}
+\label{sec:hallazgos}
+
+El análisis estático del código fuente reveló cuatro hallazgos que resultaron determinantes para definir el alcance del aislamiento.
+
+\subsection{Hallazgo 1: Dos Tipos de Identificadores}
+
+Apollo distingue de manera explícita dos identificadores que conviven en el pipeline:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|p{5cm}|p{5cm}|}
+\hline
+\textbf{Tipo} & \textbf{Origen} & \textbf{Persistencia} \\
+\hline
+\textit{Signal\_id} & HD-Map (coordenadas 3D del mundo) & Permanente (mismo semáforo físico) \\
+\hline
+\textit{Detection\_id} & Asignado durante la detección en cada \textit{frame} & Solo válido para el \textit{frame} actual \\
+\hline
+\end{tabular}
+\caption{Diferencias entre los dos tipos de identificadores que maneja el TLR.}
+\end{table}
+
+\textbf{Implicación:} el \textit{tracking} se apoya en el \textit{signal\_id}, no en la posición en píxeles. Esto significa que mover un semáforo en la imagen (por ejemplo entre \textit{frames}, por movimiento del vehículo) no confunde al sistema: la identidad viene del HD-Map, no del \textit{frame}. El módulo aislado tiene que preservar esa lógica: cualquiera sea la fuente de las \textit{projection boxes}, debe entregar \textit{signal\_id}s persistentes para que la etapa de \textit{tracking} funcione correctamente.
+
+\subsection{Hallazgo 2: \textit{Semantic\_id} Diseñado pero No Implementado}
+
+El análisis encontró código diseñado para una funcionalidad que en la práctica no se ejecuta:
+
+\begin{codesnippet}
+\begin{verbatim}
+// traffic_light/region_proposal_component.cc:335
+int cur_semantic = 0;  // Siempre 0, hardcodeado
+for (auto& light : lights) {
+    light->semantic = cur_semantic;
+}
+\end{verbatim}
+\end{codesnippet}
+
+El \textit{semantic\_id} debería agrupar semáforos de la misma intersección para aplicar \textit{voting} (si dos de tres semáforos del cruce ven verde, el tercero también debería verlo). El código de \textit{voting} existe en la etapa de \textit{tracking}, pero como \textit{semantic\_id} está hardcodeado a 0 para todos los semáforos, cada uno se trata como un grupo individual y el \textit{voting} se reduce a una operación trivial sobre un solo elemento.
+
+\textbf{Implicación:} todos los semáforos se procesan independientemente, sin corrección por consistencia entre semáforos del mismo cruce. Esto es importante para el aislamiento por dos razones: el módulo aislado no necesita implementar el \textit{voting} efectivo (no aporta nada en el original), y este hueco constituye una oportunidad concreta de testing (qué pasa cuando un semáforo del mismo cruce contradice a otro).
+
+\subsection{Hallazgo 3: Dependencia Crítica del HD-Map}
+
+El HD-Map no solo provee las regiones donde buscar semáforos: es la fuente de identidad del sistema. Sin HD-Map:
+
+\begin{itemize}
+    \item No hay \textit{signal\_id}, por lo tanto no hay \textit{tracking} consistente.
+    \item No hay \textit{projection boxes}, por lo tanto la red de detección no sabe dónde mirar.
+    \item No hay reglas de selección de cámara, porque esas reglas se basan en la geometría 3D de los semáforos.
+\end{itemize}
+
+\textbf{Implicación para el aislamiento:} no podemos reproducir un HD-Map dinámico ni la proyección 3D→2D con calibración de cámara. Pero podemos \textit{simular su función} entregando \textit{projection boxes} pre-calculadas y \textit{signal\_id}s estables desde un archivo. Desde el punto de vista del resto del módulo, el \textit{input} es el mismo (una lista de \textit{bounding boxes} 2D con identidad persistente); la diferencia está en cómo se obtiene esa lista.
+
+\subsection{Hallazgo 4: Selección Automática de Cámara}
+
+Apollo opera con un sistema multi-cámara: una telephoto (25\,mm, $\sim$30° de campo de visión, mayor resolución a distancia) y una \textit{wide-angle} (6\,mm, $\sim$120° de campo de visión, mejor para semáforos cercanos). La etapa de preprocesamiento incluye lógica para elegir cuál usar en cada \textit{frame}: por defecto telephoto, pero \textit{wide-angle} si alguna \textit{projection box} queda fuera del campo de la telephoto.
+
+\textbf{Implicación:} esta lógica depende del HD-Map (necesita las proyecciones para decidir) y del parque de cámaras del vehículo. Para el aislamiento, asumir una sola cámara no afecta la lógica de las etapas posteriores: ellas reciben una imagen y una lista de \textit{projection boxes}, sin importar de cuál cámara vinieron.
+
+\section{Decisiones de Aislamiento}
+
+Los hallazgos anteriores informan tres decisiones que definen qué se aísla y qué no.
+
+\subsection{Alcance Funcional}
+
+\textbf{Incluir} (la lógica \textit{core} del TLR):
+\begin{itemize}
+    \item Las cinco etapas del pipeline.
+    \item Los cuatro modelos de red neuronal (detector + tres clasificadores: vertical, horizontal, \textit{quad}).
+    \item Todas las reglas de \textit{tracking} temporal (incluyendo la regla de seguridad GREEN→YELLOW→RED, la histéresis para \textit{black} y la detección de \textit{blink} en verde).
+    \item Todos los parámetros numéricos extraídos del código (sigmas, pesos, \textit{thresholds}, ventanas temporales).
+\end{itemize}
+
+\textbf{Excluir} (infraestructura no funcional):
+\begin{itemize}
+    \item CyberRT como \textit{framework} de mensajería.
+    \item El sistema de \textit{build} Bazel.
+    \item La contenerización Docker y los requisitos de hardware específicos.
+    \item La integración con otros módulos de Apollo (planificación, control).
+\end{itemize}
+
+\textbf{Reemplazar por una interfaz simplificada} (sin afectar la lógica \textit{core}):
+\begin{itemize}
+    \item El HD-Map dinámico y la proyección 3D→2D, reemplazados por \textit{projection boxes} pre-calculadas con \textit{signal\_id} estable.
+    \item El sistema multi-cámara, reducido a una sola cámara.
+\end{itemize}
+
+\subsection{Decisiones de Interfaz}
+
+Comparando \textit{inputs}:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|p{5cm}|p{5cm}|}
+\hline
+& \textbf{Apollo} & \textbf{Módulo aislado} \\
+\hline
+Imagen & vía CyberRT (\textit{channel}) & archivo o \textit{frame} de video \\
+\hline
+\textit{Projection boxes} & calculadas en tiempo real desde el HD-Map y la pose & pre-calculadas en archivo de texto, con \textit{signal\_id} \\
+\hline
+\end{tabular}
+\caption{Comparación de las interfaces de entrada del módulo en Apollo y en el módulo aislado.}
+\end{table}
+
+\textbf{Justificación:} desde el punto de vista del resto del módulo TLR, ambas interfaces producen el mismo \textit{input}: una lista de \textit{bounding boxes} 2D con identidad persistente sobre la cual buscar semáforos. La diferencia está en \textit{cómo} se obtiene esa lista, no en \textit{qué representa}. La simplificación no afecta la lógica de detección, asignación, reconocimiento ni \textit{tracking}: estas etapas reciben exactamente la misma estructura de datos.
+
+La salida se mantiene equivalente: un conjunto de semáforos identificados por \textit{signal\_id}, cada uno con su color y \textit{flag} de \textit{blink}.
+
+\subsection{Criterio de Equivalencia Funcional}
+
+Definimos que el módulo aislado es ``equivalente'' al original si:
+
+\begin{enumerate}
+    \item \textbf{Mismos parámetros:} todos los valores numéricos (\textit{thresholds}, pesos, sigmas, ventanas temporales) coinciden con los extraídos del código de Apollo.
+    \item \textbf{Misma lógica:} cada etapa implementa la misma secuencia de operaciones en el mismo orden, incluyendo casos especiales y validaciones.
+    \item \textbf{Mismas reglas:} las reglas de \textit{tracking} y seguridad se aplican idénticamente (GREEN→YELLOW→RED se rechaza; \textit{black} se descarta cuando había color previo; \textit{blink} solo se detecta en verde con el \textit{threshold} de 0.55\,s; el historial se resetea pasados 1.5\,s).
+    \item \textbf{Mismos modelos:} se utilizan los mismos pesos de los cuatro modelos pre-entrenados, convertidos al \textit{runtime} de la implementación aislada (PyTorch en lugar de Caffe).
+\end{enumerate}
+
+\textbf{Nota importante:} no podemos validar empíricamente la equivalencia ejecutando ambos sistemas en paralelo sobre las mismas entradas: el costo de configurar Apollo es desproporcionado al objetivo (ver Capítulo~\ref{cap:reimplementacion}). La equivalencia se garantiza ``por construcción'': el módulo aislado se deriva directamente del código fuente del original, etapa por etapa, parámetro por parámetro. Esta es una limitación explícita del enfoque, y el conjunto de supuestos bajo los cuales aceptamos la equivalencia se enumera al cierre del Capítulo~\ref{cap:reimplementacion}.
+
+\section{Resumen}
+
+El análisis del módulo TLR estuvo guiado por cuatro preguntas dirigidas al aislamiento. A partir del código fuente se reconstruyó la estructura del módulo (cinco etapas dentro de cuatro subcomponentes en \texttt{modules/perception/}), su interfaz con el resto de Apollo (HD-Map, CyberRT, calibración de cámara, modelos en Caffe), y su comportamiento a alto nivel (\textit{frame} + información geográfica $\to$ semáforos identificados con color y \textit{blink}).
+
+Cuatro hallazgos resultaron determinantes para definir el aislamiento: los dos tipos de identificadores y la importancia del \textit{signal\_id} para el \textit{tracking}, el \textit{semantic\_id} diseñado pero no implementado, la dependencia crítica del HD-Map como fuente de identidad, y la selección automática de cámara. De ellos se desprenden tres decisiones: qué se incluye en el módulo aislado, qué se descarta, y qué se reemplaza por interfaces simplificadas sin alterar la lógica \textit{core}.
+
+El siguiente capítulo entra en el detalle técnico de cada una de las cinco etapas: parámetros exactos, sub-algoritmos (NMS, matriz de costos del húngaro, \textit{prob2color}, reglas de transición), y referencias al código fuente. El Capítulo~\ref{cap:reimplementacion} describe luego cómo se construyó el módulo aislado a partir de estas decisiones, qué cambió funcionalmente respecto al original, y bajo qué supuestos se considera equivalente.

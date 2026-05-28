@@ -3,81 +3,93 @@
 
 \section{Motivación}
 
-Los sistemas de conducción autónoma integran múltiples componentes de software que deben operar de manera coordinada para garantizar la seguridad. Entre estos componentes, los módulos de percepción basados en machine learning son particularmente difíciles de testear: no tienen especificaciones formales completas, su comportamiento se aprende de datos, y pueden fallar de formas sutiles e inesperadas.
+Los sistemas de conducción autónoma integran múltiples componentes de software que deben operar de manera coordinada para garantizar la seguridad. Entre ellos, los módulos de percepción basados en \textit{machine learning} son particularmente difíciles de testear: no tienen especificaciones formales completas, su comportamiento se aprende de datos, y pueden fallar de formas sutiles e inesperadas.
 
-El testing de estos sistemas presenta un desafío fundamental: ¿cómo diseñar tests efectivos para un componente cuyo comportamiento correcto no está formalmente especificado? Este trabajo propone que la respuesta está en el \textbf{conocimiento interno del sistema}. Si comprendemos profundamente cómo funciona un componente ---sus parámetros, sus reglas de decisión, sus casos límite--- podemos diseñar tests que exploten ese conocimiento para encontrar comportamientos anómalos.
+El testing de estos sistemas presenta dos desafíos que se refuerzan entre sí. El primero es metodológico: \textit{¿cómo diseñar tests efectivos para un componente cuyo comportamiento correcto no está formalmente especificado?} Este trabajo propone que la respuesta está en el \textbf{conocimiento interno del sistema}: si comprendemos cómo funciona un componente ---sus parámetros, sus reglas de decisión, sus casos límite--- podemos diseñar tests que exploten ese conocimiento para encontrar comportamientos anómalos.
 
-Sin embargo, los sistemas de conducción autónoma como Apollo de Baidu son extremadamente complejos: millones de líneas de código, decenas de dependencias, configuraciones específicas de hardware. Esta complejidad dificulta tanto la comprensión del sistema como el diseño de tests controlados.
+El segundo desafío es práctico: los sistemas de conducción autónoma como Apollo de Baidu son extremadamente complejos. Cientos de miles de líneas de código, decenas de dependencias, frameworks de mensajería propios (CyberRT), sistemas de build específicos (Bazel) y requisitos estrictos de hardware (GPU CUDA, Docker, Ubuntu en versiones puntuales) hacen que ejercitar un único subsistema en condiciones controladas sea, en la práctica, inviable. El acoplamiento del componente con el resto del vehículo virtual impide el tipo de testing dirigido que requiere el primer desafío.
 
 \section{Propuesta}
 
-Este trabajo propone una metodología basada en \textbf{recortar y reimplementar} un subsistema crítico para poder comprenderlo profundamente y testearlo de forma controlada.
+Este trabajo propone una metodología basada en \textbf{aislar} un subsistema crítico del sistema completo para poder testearlo de forma controlada. El concepto central no es ``reescribir'' ni ``optimizar'': es \textit{modularizar} la lógica funcional del componente, sacándola del entorno acoplado en el que vive, sin alterar su semántica.
 
-La idea central es:
+La idea se concreta en cuatro pasos:
 
 \begin{enumerate}
-    \item \textbf{Seleccionar un subsistema funcionalmente relevante} del sistema completo
-    \item \textbf{Reimplementarlo} de forma fiel pero simplificada, eliminando complejidad accidental (dependencias, configuraciones)
-    \item \textbf{Usar el conocimiento adquirido} durante la reimplementación para diseñar tests específicos
-    \item \textbf{Buscar adversarios}: casos de test que revelen debilidades del sistema mediante análisis de caja blanca
+    \item \textbf{Seleccionar un subsistema funcionalmente relevante} del sistema completo, con interfaces claras y criticidad suficiente para justificar el esfuerzo.
+
+    \item \textbf{Analizar su código fuente} para extraer alcance, parámetros, reglas de decisión y dependencias.
+
+    \item \textbf{Construir una versión aislada} del subsistema, equivalente desde el punto de vista funcional, que pueda ejecutarse sin el resto de la infraestructura.
+
+    \item \textbf{Aprovechar el conocimiento adquirido} durante el aislamiento para diseñar tests específicos: tests que sólo tienen sentido si se entiende lo que pasa dentro del módulo.
 \end{enumerate}
 
-\subsection{¿Por qué reimplementar?}
+\subsection{¿Qué significa aislar y por qué importa?}
 
-El objetivo no es crear un sistema mejor, sino obtener un \textbf{subsistema equivalente sobre el cual tengamos control total}. Esto permite:
-
-\begin{itemize}
-    \item \textbf{Comprensión profunda:} Reimplementar fuerza a entender cada detalle del sistema original
-    \item \textbf{Simplicidad:} Eliminar dependencias innecesarias facilita la experimentación
-    \item \textbf{Instrumentación:} Agregar logging, visualizaciones, modificaciones para testing
-    \item \textbf{Fidelidad:} Si la reimplementación es equivalente, los hallazgos aplican al sistema original
-\end{itemize}
-
-\subsection{¿Por qué buscar adversarios mediante caja blanca?}
-
-La hipótesis central de este trabajo es que si tenemos acceso al código y comprendemos la lógica interna de un sistema, podemos diseñar tests más efectivos que con testing de caja negra. Específicamente:
+Aislar un módulo no es crear un sistema nuevo. El objetivo es obtener un \textbf{subsistema funcionalmente equivalente sobre el cual tengamos control total}. Esto permite:
 
 \begin{itemize}
-    \item Podemos identificar \textbf{parámetros críticos} (thresholds, pesos) y testear cerca de sus límites
-    \item Podemos encontrar \textbf{reglas de negocio} y diseñar inputs que las violen
-    \item Podemos descubrir \textbf{funcionalidades no implementadas} que podrían causar problemas
-    \item Podemos entender \textbf{modos de falla} analizando la lógica de clasificación
+    \item \textbf{Comprensión profunda:} el proceso de extraer un módulo de su entorno obliga a entender qué necesita realmente para funcionar y qué es contexto accidental del sistema original.
+
+    \item \textbf{Simplicidad operativa:} eliminar dependencias innecesarias (frameworks de mensajería, sistemas de build pesados, integraciones con otros módulos) facilita la experimentación.
+
+    \item \textbf{Instrumentación:} agregar \textit{logging}, visualizaciones y modificaciones puntuales sobre un módulo aislado es trivial; sobre el sistema completo, requiere recompilar y redesplegar partes que no nos interesan.
+
+    \item \textbf{Fidelidad funcional:} si la versión aislada es equivalente al original ---mismos parámetros, mismas reglas, mismos modelos--- los hallazgos sobre ella aplican, en lo fundamental, al sistema del que se extrajo.
 \end{itemize}
+
+La \textit{reimplementación} en otro lenguaje aparece en este trabajo solo como un medio práctico para concretar el aislamiento. Lo importante no es el lenguaje en el que termina el módulo, sino que termina extraído de su entorno; que la elección haya sido Python obedece a comodidad de desarrollo, no a una propiedad esencial del enfoque.
+
+\subsection{¿Por qué testear con conocimiento interno?}
+
+La hipótesis central del trabajo es que si tenemos acceso al código y comprendemos la lógica interna de un sistema, podemos diseñar tests más efectivos que con testing de caja negra. Específicamente:
+
+\begin{itemize}
+    \item Podemos identificar \textbf{parámetros críticos} (\textit{thresholds}, pesos, sigmas) y testear cerca de sus límites.
+    \item Podemos encontrar \textbf{reglas de negocio} (transiciones permitidas, casos especiales) y diseñar inputs que las violen.
+    \item Podemos descubrir \textbf{funcionalidades diseñadas pero no implementadas} cuyo no-funcionamiento podría sorprender a un usuario externo.
+    \item Podemos entender \textbf{modos de falla} analizando la lógica de clasificación, y construir adversarios que los exploten.
+\end{itemize}
+
+Este tipo de tests, característicos del testing de caja blanca, sólo son accesibles cuando el módulo está aislado y bajo control directo.
 
 \section{Caso de Estudio}
 
-Como caso de estudio, seleccionamos el módulo de detección de semáforos (Traffic Light Recognition - TLR) del sistema Apollo de Baidu \cite{apollo_auto}.
+Como caso de estudio se seleccionó el módulo de detección de semáforos (\textit{Traffic Light Recognition}, TLR) del sistema Apollo de Baidu \cite{apollo_auto}.
 
 \subsection{Criterios de Selección}
 
 \begin{enumerate}
-    \item \textbf{Criticidad:} La detección de semáforos es un componente de seguridad crítico
+    \item \textbf{Criticidad:} la detección de semáforos es un componente de seguridad clave en cualquier vehículo autónomo urbano.
 
-    \item \textbf{Simplicidad relativa:} Solo requiere cámaras (no LiDAR), tiene un espacio de salida limitado (rojo, amarillo, verde, apagado)
+    \item \textbf{Simplicidad sensorial relativa:} sólo requiere cámaras (no LiDAR), lo que evita el costo enorme de simular sensores 3D. Las cámaras permiten usar videos e imágenes estáticas para construir casos de test reproducibles.
 
-    \item \textbf{Interfaces claras:} Input (imagen + regiones de interés) → Output (detecciones + estados)
+    \item \textbf{Espacio de salida limitado:} el módulo clasifica cada semáforo en un conjunto pequeño de estados (rojo, amarillo, verde, apagado), lo que facilita razonar sobre qué constituye un comportamiento correcto.
 
-    \item \textbf{Código disponible:} Apollo es open source, permitiendo análisis completo
+    \item \textbf{Interfaces claras:} \textit{input} (imagen + regiones de interés) → \textit{output} (detecciones + estados + identificadores persistentes).
+
+    \item \textbf{Código disponible:} Apollo es \textit{open source}, lo que permite análisis estático completo.
 \end{enumerate}
 
 \subsection{Apollo}
 
-Apollo es una plataforma de código abierto para vehículos autónomos desarrollada por Baidu \cite{apollo_auto}. El módulo TLR es responsable de detectar semáforos en imágenes de cámara, reconocer su estado actual, y mantener tracking temporal de los semáforos a lo largo del tiempo.
+Apollo es una plataforma de código abierto para vehículos autónomos desarrollada por Baidu \cite{apollo_auto}. El módulo TLR es responsable de detectar semáforos en imágenes de cámara, reconocer su estado actual, y mantener \textit{tracking} temporal de cada semáforo a lo largo de los frames. El detalle de cómo está organizado este módulo dentro de Apollo, qué hace cada una de sus etapas y qué dependencias tiene con el resto del sistema se aborda en el Capítulo~\ref{cap:analisis_apollo}.
 
 \section{Contribuciones}
 
 Las contribuciones de este trabajo son:
 
 \begin{enumerate}
-    \item \textbf{Metodología de recorte y reimplementación:} Demostración de que reimplementar un subsistema es más viable que intentar recortarlo del sistema complejo original
+    \item \textbf{Metodología de aislamiento para testing:} formulación y aplicación de un proceso en el que la modularización de un subsistema crítico se usa como herramienta para habilitar testing dirigido sobre componentes de \textit{machine learning} embebidos en sistemas complejos.
 
-    \item \textbf{Análisis del sistema Apollo:} Documentación de decisiones de diseño no documentadas, parámetros extraídos, y hallazgos sobre el sistema
+    \item \textbf{Justificación empírica de la elección entre recortar y aislar reconstruyendo:} se intentó primero recortar el código C++ original de Apollo, se documenta por qué ese camino fue inviable, y se contrasta con el aislamiento mediante reconstrucción en un entorno simplificado.
 
-    \item \textbf{Criterios de conformidad:} Definición de qué significa que el recorte sea ``equivalente'' al original
+    \item \textbf{Análisis funcional del módulo TLR de Apollo:} documentación de decisiones de diseño y parámetros que no aparecen explicitados en la documentación oficial (ponderación 70/30 entre distancia y confianza en el algoritmo húngaro, \textit{semantic ID} diseñado pero hardcodeado a 0 en el código, ventana temporal de 1.5\,s del \textit{tracking} con histéresis, restricción del \textit{blink detection} al color verde con umbral de 0.55\,s). La regla de seguridad GREEN→YELLOW→RED \textit{sí} está documentada \cite{apollo_tlr_docs}, pero el conjunto completo de reglas que la rodean (cómo se conjugan con la ventana temporal, la histéresis y el reset) no lo está.
 
-    \item \textbf{Proceso de testing basado en conocimiento interno:} Diseño de tests específicos aprovechando la comprensión profunda del sistema
+    \item \textbf{Definición de supuestos de equivalencia funcional:} criterios explícitos bajo los cuales el módulo aislado puede considerarse equivalente al original, dejando claro que la validación es por construcción y no empírica.
 
-    \item \textbf{Validación de la hipótesis:} Demostración de que el análisis de caja blanca permite encontrar adversarios (caso del test de transición verde→amarillo)
+    \item \textbf{Tests basados en conocimiento interno:} diseño y ejecución de tests específicos que aprovechan la comprensión profunda obtenida durante el aislamiento, incluyendo el test de transición verde→amarillo como caso testigo.
 \end{enumerate}
 
 \section{Estructura del Trabajo}
@@ -85,15 +97,17 @@ Las contribuciones de este trabajo son:
 Este trabajo se organiza de la siguiente manera:
 
 \begin{itemize}
-    \item \textbf{Capítulo \ref{cap:marco_teorico} - Marco Teórico:} Conceptos necesarios para comprender el trabajo, incluyendo todo lo conocido previamente sobre Apollo
+    \item \textbf{Capítulo \ref{cap:marco_teorico} --- Marco Teórico:} conceptos necesarios para comprender el trabajo (testing oracle-based, caja blanca, testing exploratorio, IoU, algoritmo húngaro) y presentación mínima del sistema Apollo. Los detalles del módulo TLR se posponen a los capítulos siguientes.
 
-    \item \textbf{Capítulo \ref{cap:analisis_apollo} - Análisis del Sistema:} El proceso de análisis de Apollo, las preguntas que guiaron el trabajo, y los hallazgos que justificaron las decisiones de recorte
+    \item \textbf{Capítulo \ref{cap:analisis_apollo} --- Análisis del Módulo TLR:} las preguntas que guiaron el análisis, la historia del módulo dentro de Apollo (sus cinco etapas con \textit{input}/\textit{output} a alto nivel), los hallazgos extraídos del código fuente, y las decisiones de aislamiento que se desprenden del análisis.
 
-    \item \textbf{Capítulo \ref{cap:reimplementacion} - Reimplementación:} Objetivos del recorte, alcance funcional, criterios de conformidad, y el proceso de reimplementación incluyendo la validación de equivalencia
+    \item \textbf{Capítulo \ref{cap:funcionamiento_tlr} --- Funcionamiento del Módulo TLR de Apollo:} descripción técnica detallada de cada una de las cinco etapas del pipeline original (preprocesamiento, detección, asignación, reconocimiento y \textit{tracking}), incluyendo parámetros, sub-algoritmos y reglas de decisión. Funciona como capítulo de referencia técnica.
 
-    \item \textbf{Capítulo \ref{cap:diseno_tests} - Testing:} Diseño de tests basados en conocimiento interno del sistema, con foco en el test de transición verde→amarillo
+    \item \textbf{Capítulo \ref{cap:reimplementacion} --- Aislamiento del Módulo TLR:} el primer intento fallido de recortar el código original, la construcción del módulo aislado, los cambios funcionales respecto al original (no a nivel de lenguaje, sino de \textit{cómo se usa} cada funcionalidad), y los supuestos de equivalencia bajo los cuales el módulo aislado se considera fiel al original.
 
-    \item \textbf{Capítulo \ref{cap:resultados} - Resultados:} Hallazgos del proceso de testing y análisis
+    \item \textbf{Capítulo \ref{cap:diseno_tests} --- Testing:} diseño de tests basados en el conocimiento interno del módulo, con foco en el test de transición verde→amarillo.
 
-    \item \textbf{Capítulo \ref{cap:conclusiones} - Conclusiones:} Lecciones aprendidas, limitaciones, y trabajo futuro
+    \item \textbf{Capítulo \ref{cap:resultados} --- Resultados:} hallazgos del proceso de testing y análisis.
+
+    \item \textbf{Capítulo \ref{cap:conclusiones} --- Conclusiones:} lecciones aprendidas, limitaciones del enfoque y trabajo futuro.
 \end{itemize}

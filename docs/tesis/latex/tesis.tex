@@ -31,7 +31,7 @@
 
 % Para diagramas de pipelines
 \usepackage{tikz}
-\usetikzlibrary{shapes.geometric, arrows, positioning, calc}
+\usetikzlibrary{shapes.geometric, arrows, arrows.meta, positioning, calc}
 
 \usepackage{amsmath, amsthm, amssymb}
 
@@ -115,8 +115,8 @@
 \thispagestyle{empty}
 \materia{Licenciatura en Ciencias de la Computaci\'on}
 \submateria{Trabajo Final de Licenciatura}
-\titulo{Testing de Sistemas de Detecci\'on de Sem\'aforos mediante Reimplementaci\'on}
-\subtitulo{Un Enfoque Basado en Reverse Engineering del Sistema Apollo}
+\titulo{Aislamiento de un M\'odulo de Detecci\'on de Sem\'aforos para Hacer Testing}
+\subtitulo{Un Enfoque Basado en el An\'alisis y Modularizaci\'on del Sistema Apollo}
 \fecha{2025}
 \integrante{Ciro Juan Brignolo}{707/16}{cirob100@gmail.com}
 
@@ -131,15 +131,15 @@
 \chapter*{Resumen}
 \addcontentsline{toc}{chapter}{Resumen}
 
-Los sistemas de conducción autónoma representan infraestructuras de software complejas que integran múltiples componentes de machine learning. El testing exhaustivo de estos sistemas es fundamental para garantizar su confiabilidad y seguridad, pero la complejidad de los sistemas completos dificulta el diseño de tests específicos y controlados.
+Los sistemas de conducción autónoma son infraestructuras de software complejas que integran múltiples componentes de \textit{machine learning}. El testing exhaustivo de estos sistemas es fundamental para garantizar su confiabilidad y seguridad, pero la complejidad y el acoplamiento del sistema completo dificultan el diseño de tests específicos y controlados sobre componentes individuales.
 
-Este trabajo presenta una metodología de testing basada en la reimplementación de subsistemas críticos de vehículos autónomos. Como caso de estudio, se realizó el análisis mediante reverse engineering del módulo de detección de semáforos del sistema Apollo de Baidu, seguido de su reimplementación en PyTorch. Esta reimplementación sirvió como plataforma controlada para comprender profundamente el sistema y diseñar tests exploratorios que identificaran debilidades y comportamientos inesperados.
+Este trabajo presenta una metodología de testing basada en el \textbf{aislamiento} de un subsistema crítico: la idea es modularizar la lógica funcional de un componente sacándola del entorno acoplado del sistema original, para poder ejercitarla en condiciones controladas. Como caso de estudio se eligió el módulo de detección de semáforos (Traffic Light Recognition, TLR) del sistema Apollo de Baidu. Se analizó el código original para extraer su estructura, parámetros y reglas de decisión, y se construyó un módulo aislado funcionalmente equivalente que se ejecuta sin la infraestructura del vehículo (CyberRT, Bazel, Docker, HD-Map dinámico). La reimplementación en Python aparece solo como medio práctico para concretar ese aislamiento: el objetivo no es un sistema mejor, sino una versión del módulo sobre la que tengamos control total.
 
-El proceso incluyó: (1) dos aproximaciones de implementación, la primera fallida intentando recortar Apollo y la segunda exitosa mediante reimplementación desde cero, (2) análisis iterativo del código fuente para extraer especificaciones funcionales, (3) validación de equivalencia mediante revisión a nivel código, y (4) descubrimiento de errores de comprensión y diseño de tests basados en el conocimiento interno del sistema.
+El proceso incluyó: (1) un primer intento fallido de recortar el código original C++ del sistema completo, descartado por el costo desproporcionado de su infraestructura; (2) un análisis iterativo del código fuente para extraer especificaciones funcionales no documentadas; (3) la construcción del módulo aislado a partir de ese análisis; (4) la definición de un conjunto de supuestos de equivalencia funcional con el módulo original; y (5) el diseño de tests exploratorios basados en el conocimiento interno adquirido durante el aislamiento.
 
-Los resultados demuestran la viabilidad de este enfoque iterativo para comprender y testear sistemas ML complejos, revelando tanto errores de implementación como decisiones de diseño del sistema original que serían difíciles de descubrir mediante testing de caja negra.
+Los resultados muestran la viabilidad del enfoque: el módulo aislado permitió diseñar tests difícilmente realizables sobre el sistema completo, y el proceso reveló decisiones de diseño y parámetros no documentados oficialmente (ponderación 70/30 del algoritmo húngaro, funcionalidad de \textit{semantic ID} diseñada pero hardcodeada a 0 en el código, ventana temporal de 1.5\,s del \textit{tracking} con histéresis, restricción del \textit{blink detection} al color verde con umbral de 0.55\,s).
 
-\textbf{Palabras clave:} testing de software, sistemas de conducción autónoma, reverse engineering, oracle-based testing, detección de semáforos, machine learning, Apollo, PyTorch
+\textbf{Palabras clave:} testing de software, sistemas de conducción autónoma, aislamiento de subsistemas, modularización, oracle-based testing, detección de semáforos, machine learning, Apollo, PyTorch
 
 \newpage
 
@@ -164,11 +164,12 @@ Los resultados demuestran la viabilidad de este enfoque iterativo para comprende
 
 \include{chapters/01_introduccion}
 \include{chapters/02_marco_teorico}
-\include{chapters/03_analisis_apollo}
-\include{chapters/04_reimplementacion}
-\include{chapters/05_diseno_tests}
-\include{chapters/06_resultados}
-\include{chapters/07_conclusiones}
+\include{chapters/03_analisis_modulo}
+\include{chapters/04_funcionamiento_tlr}
+\include{chapters/05_aislamiento}
+\include{chapters/06_diseno_tests}
+\include{chapters/07_resultados}
+\include{chapters/08_conclusiones}
 
 % ******************************************************** %
 % ~~~~~~~~            BIBLIOGRAFÍA               ~~~~~~~~~ %
@@ -182,7 +183,7 @@ Los resultados demuestran la viabilidad de este enfoque iterativo para comprende
 % ******************************************************** %
 
 \appendix
-\include{chapters/apendice_a}
+\include{appendices/apendice_a}
 \include{appendices/apendice_b}
 
 \end{document}

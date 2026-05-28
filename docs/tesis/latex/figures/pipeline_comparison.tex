@@ -1,5 +1,5 @@
 % Diagramas de comparacion de pipelines
-% Para usar en el capitulo 4 de la tesis
+% Para usar en el capitulo 5 de la tesis (Aislamiento del Modulo TLR)
 
 % IMPORTANTE: Desactivar shorthand de babel para que TikZ funcione
 \shorthandoff{<>}
@@ -124,8 +124,8 @@
 \node[below=0.3cm of output, font=\footnotesize, text=gray, align=center] {Linea punteada = simplificacion\\respecto a Apollo};
 
 \end{tikzpicture}
-\caption{Pipeline de la reimplementacion (simplificado)}
-\label{fig:pipeline_reimpl}
+\caption{Pipeline del modulo aislado (con interfaz simplificada)}
+\label{fig:pipeline_aislado}
 \end{figure}
 
 
@@ -175,7 +175,7 @@
 \draw[arrow] (trackA) -- (outA);
 
 % ========== REIMPLEMENTACION (derecha) ==========
-\node[font=\bfseries, right=5cm of titleA] (titleR) {Reimplementacion};
+\node[font=\bfseries, right=5cm of titleA] (titleR) {Modulo Aislado};
 
 \node[inputbox, below=0.3cm of titleR, xshift=-0.8cm] (imgR) {Imagen};
 \node[simplebox, right=0.5cm of imgR] (boxesR) {Boxes (txt)};
@@ -215,7 +215,7 @@
 };
 
 \end{tikzpicture}
-\caption{Comparacion lado a lado: Apollo vs Reimplementacion}
+\caption{Comparacion lado a lado: Apollo original vs modulo aislado. Las flechas azules indican etapas funcionalmente equivalentes; la linea roja punteada indica la unica etapa cuya interfaz se simplifico (HD-Map dinamico reemplazado por projection boxes precalculadas).}
 \label{fig:pipeline_comparison}
 \end{figure}
 

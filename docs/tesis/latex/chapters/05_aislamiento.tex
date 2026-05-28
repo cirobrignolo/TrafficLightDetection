@@ -1,0 +1,239 @@
+\chapter{Aislamiento del Módulo TLR}
+\label{cap:reimplementacion}
+
+Este capítulo describe cómo se concretó el aislamiento del módulo TLR a partir de las decisiones tomadas en el Capítulo~\ref{cap:analisis_apollo} y la referencia técnica del Capítulo~\ref{cap:funcionamiento_tlr}. La narrativa sigue el orden cronológico real del proceso. Primero se intentó recortar el código C++ original de Apollo y se descartó: la sección~\ref{sec:recorte_fallido} documenta por qué. Después se construyó una versión aislada desde cero en Python (sección~\ref{sec:implementacion}), siguiendo etapa por etapa la lógica del original. A continuación, se enumeran los cambios funcionales respecto a Apollo (sección~\ref{sec:cambios_funcionales}): no cambios de lenguaje o estructura interna, sino cambios en \textit{cómo se usa} cada funcionalidad, qué información se le pide al usuario, y qué piezas del entorno original quedaron fuera. Cierra con los supuestos de equivalencia funcional bajo los cuales aceptamos que el módulo aislado se comporta como el original (sección~\ref{sec:supuestos_equivalencia}).
+
+\section{Primera Aproximación: Recortar el Código Original}
+\label{sec:recorte_fallido}
+
+Antes de construir el módulo aislado por reconstrucción, se intentó primero el camino más directo: tomar el código C++ original de Apollo y recortar todo lo que no fuera estrictamente parte del TLR. La intuición era razonable: si el código existe y funciona, lo más eficiente es quedarse con él y eliminar el resto. En la práctica, este camino no cerró.
+
+Las cuatro carpetas del TLR (\texttt{traffic\_light\_region\_proposal}, \texttt{traffic\_light\_detection}, \texttt{traffic\_light\_recognition} y \texttt{traffic\_light\_tracking}) suman alrededor de 4\,800 líneas de C++. Pero ninguna de ellas se ejecuta de forma aislada: cada una está montada sobre infraestructura que Apollo comparte con el resto del sistema. CyberRT (el \textit{framework} de mensajería propio), \textit{perception common} (utilidades de inferencia y procesamiento), \textit{modules common} (configuración y logging) y el \textit{map module} (acceso al HD-Map) suman juntas más de 169\,000 líneas adicionales, y no son opcionales para que el TLR funcione. Sobre eso, se agrega un sistema de \textit{build} basado en Bazel, contenedores Docker como entorno de despliegue y la obligación de una GPU NVIDIA específica con CUDA configurado. Una estimación realista del tiempo necesario para llegar a un TLR ejecutable acotado se ubicaba en 1--2 meses de \textit{setup}, sin contar la depuración de las dependencias rotas que generaría el propio recorte.
+
+El balance era desproporcionado al objetivo: dominar CyberRT y Bazel aporta poco al testing del TLR, y aunque se hubiera llegado a una versión ejecutable, seguiría enredada en infraestructura que no queríamos mantener. Se descartó el recorte y se adoptó el camino de \textit{aislamiento por reconstrucción}: tomar el código original como especificación, no como base, y construir desde cero un módulo equivalente en un entorno simple. La elección de Python obedeció a comodidad de prototipado y al ecosistema de herramientas (PyTorch, NumPy, OpenCV) que facilitaban la iteración. No es un punto del enfoque: si la comodidad hubiera estado en otro lado, el aislamiento podría haberse hecho en otro lenguaje sin cambiar la idea.
+
+El trabajo que se hizo durante el período del intento fallido no se perdió. Comprender qué hacía cada etapa del pipeline a nivel conceptual ---qué dependencias tenía, qué parámetros usaba, qué reglas aplicaba--- alimentó directamente la fase de reconstrucción, y constituye buena parte del contenido del Capítulo~\ref{cap:analisis_apollo}. El Apéndice~\ref{apendice:recorte_fallido} documenta el intento con sus métricas concretas: el detalle de líneas de código por componente, la lista exhaustiva de dependencias obligatorias, los requisitos de hardware y software, el sistema de \textit{build} Bazel, y la estimación de tiempo paso a paso.
+
+\section{El Módulo Aislado}
+\label{sec:implementacion}
+
+\subsection{Resultado en una Línea}
+
+El módulo aislado es un paquete Python de aproximadamente 1\,900 líneas con dos dependencias (PyTorch y NumPy), que se invoca con la siguiente API:
+
+\begin{codesnippet}
+\begin{verbatim}
+from tlr.pipeline import load_pipeline
+
+pipeline = load_pipeline('cuda:0')   # o 'cpu'
+result = pipeline(image, projection_boxes, frame_ts=ts)
+\end{verbatim}
+\end{codesnippet}
+
+A modo de contraste, Apollo requiere Docker, CyberRT, archivos \texttt{.dag} y \texttt{.launch}, calibración de cámara y un HD-Map cargado para producir el equivalente.
+
+\subsection{Estructura del Paquete}
+
+El paquete se organiza siguiendo el pipeline del Capítulo~\ref{cap:funcionamiento_tlr}, con un módulo por etapa:
+
+\begin{verbatim}
+src/tlr/
+|-- pipeline.py              # Pipeline principal y orquestacion
+|-- detector.py              # Wrapper del detector
+|-- recognizer.py            # Wrapper de los recognizers
+|-- selector.py              # Asignacion (matriz de costos)
+|-- hungarian_optimizer.py   # Algoritmo hungaro
+|-- tracking.py              # Tracking temporal y reglas
+|-- faster_rcnn.py           # Componentes del detector
+|-- rpn_proposal.py          # Region Proposal Network
+|-- feature_net.py           # Backbone de features
+|-- dfmb_roi_align.py        # ROI Align layer
+|-- tools/utils.py           # Preprocesamiento, NMS, ProjectionROI
+|-- weights/                 # tl.torch, vert.torch, hori.torch, quad.torch
+`-- confs/                   # Configuraciones de capas (JSON)
+\end{verbatim}
+
+\subsection{Conversión de Modelos}
+
+Los cuatro modelos pre-entrenados del TLR están en formato Caffe en el repositorio de Apollo. Para usarlos en el módulo aislado se hizo una conversión a PyTorch en cuatro pasos:
+
+\begin{enumerate}
+    \item Parsear los archivos \texttt{.prototxt} para extraer la arquitectura.
+    \item Crear capas equivalentes en PyTorch.
+    \item Cargar los pesos desde los archivos \texttt{.caffemodel}.
+    \item Validar la equivalencia numérica capa por capa.
+\end{enumerate}
+
+La conversión no introduce cambios funcionales: la arquitectura y los pesos son los mismos; lo único que cambia es el \textit{runtime} sobre el que se evalúan. Los modelos convertidos se entregan como archivos \texttt{.torch}: \texttt{tl.torch} (detector), \texttt{vert.torch}, \texttt{hori.torch} y \texttt{quad.torch} (\textit{recognizers}).
+
+\subsection{Implementación Etapa por Etapa}
+
+Cada etapa del módulo aislado se construyó siguiendo directamente el detalle del Capítulo~\ref{cap:funcionamiento_tlr}, preservando parámetros, orden de operaciones y reglas de decisión. A continuación, el resumen de qué hace cada archivo y qué lógica del original implementa.
+
+\begin{itemize}
+    \item \textbf{Preprocesamiento (\texttt{tools/utils.py}, \texttt{pipeline.py}).} Convierte cada \textit{projection box} en un objeto \texttt{ProjectionROI}, calcula la \texttt{crop\_roi} expandida ($\times 2.5$, mínimo 270\,px), extrae la región y la redimensiona a $270\times270$. Aplica la normalización con medias BGR $[102.98, 115.95, 122.77]$.
+    \item \textbf{Detección (\texttt{detector.py}, \texttt{faster\_rcnn.py}, \texttt{rpn\_proposal.py}, \texttt{feature\_net.py}, \texttt{dfmb\_roi\_align.py}).} Implementa la red \textit{Faster R-CNN} con RPN, \textit{ROI Pooling} basado en DFMB-PSROIAlign, y los tres niveles de NMS (RPN 0.7, RCNN 0.5, global 0.6).
+    \item \textbf{Asignación (\texttt{selector.py}, \texttt{hungarian\_optimizer.py}).} Construye la matriz de costos con el \textit{score} gaussiano ($\sigma = 100$), aplica los pesos 70/30, hace \textit{clip} del \textit{score} de detección a 0.9, fuerza el costo a 0 cuando la detección sale del \texttt{crop\_roi}, y ejecuta el algoritmo húngaro para obtener la asignación óptima.
+    \item \textbf{Reconocimiento (\texttt{recognizer.py}, \texttt{pipeline.py}).} Selecciona el clasificador según el tipo detectado, recorta y redimensiona al \textit{shape} correspondiente, aplica normalización con medias $[66.56, 66.58, 69.06]$ y \textit{scale} 0.01, e implementa \texttt{Prob2Color} con \textit{threshold} 0.5.
+    \item \textbf{Tracking (\texttt{tracking.py}).} Mantiene un historial por \texttt{signal\_id}. Aplica la regla GREEN$\to$YELLOW$\to$RED, la histéresis para BLACK, la detección de \textit{blink} restringida al verde con \textit{threshold} 0.55\,s, y el \textit{reset} ante ventanas mayores a 1.5\,s.
+\end{itemize}
+
+Las cinco etapas conservan exactamente los mismos parámetros y reglas extraídos del análisis. La diferencia funcional con el original está en los \textit{bordes} del módulo, no en su interior; ese es el objeto de la próxima sección.
+
+\section{Cambios Funcionales Respecto al Original}
+\label{sec:cambios_funcionales}
+
+Esta sección enumera lo que cambió funcionalmente al pasar de Apollo a la versión aislada. No se trata de diferencias de lenguaje o de estructuras de datos (Caffe $\to$ PyTorch, \texttt{std::vector} $\to$ \texttt{dict}, etc.), que son consecuencia mecánica de la elección de \textit{runtime} y son irrelevantes para el comportamiento observable. Se trata de cambios en cómo el módulo se conecta con el entorno y en qué se le pide al usuario para que funcione.
+
+\subsection{Origen de las Projection Boxes}
+
+\textbf{En Apollo.} El componente \texttt{traffic\_light\_region\_proposal} calcula las \texttt{projection\_roi}s en tiempo real, en cada \textit{frame}, a partir de:
+\begin{itemize}
+    \item La pose 6DOF actual del vehículo (GPS + IMU + odometría).
+    \item Una consulta al HD-Map en un radio de 150\,m.
+    \item La calibración intrínseca y extrínseca de la cámara activa.
+\end{itemize}
+
+El sistema ``sabe'' dónde buscar semáforos porque conoce su posición física en el mundo y dónde apunta su cámara.
+
+\textbf{En el módulo aislado.} Las \textit{projection boxes} se leen de un archivo de texto pre-calculado, con \texttt{signal\_id} estable por línea:
+
+\begin{codesnippet}
+\begin{verbatim}
+# Una linea por instancia: x1 y1 x2 y2 signal_id
+850 300 890 380 0
+1050 280 1090 360 1
+1200 320 1235 390 2
+\end{verbatim}
+\end{codesnippet}
+
+\textbf{Implicación funcional.} El usuario del módulo aislado tiene que decirle al sistema dónde buscar, en píxeles, antes de ejecutar el pipeline. Esto cambia la naturaleza del módulo:
+
+\begin{itemize}
+    \item Se pierde la robustez ante errores de pose: Apollo absorbe deriva del GPS, ruido en la odometría y errores de calibración de cámara recalculando proyecciones cada \textit{frame}. El módulo aislado no tiene esa información, así que cualquier error de calibración inicial se arrastra a todo el procesamiento.
+    \item Se gana control absoluto sobre el escenario de test: para diseñar un test, podemos colocar \textit{projection boxes} donde queramos, decidir cuándo aparecen o desaparecen, cambiar sus \texttt{signal\_id}s para forzar cruces de historial, etc. Esto es difícil de hacer en Apollo, donde las proyecciones son consecuencia de la geometría del mundo.
+    \item Desde el punto de vista del resto del módulo, el \textit{input} es el mismo: una lista de \textit{bounding boxes} 2D con identidad persistente.
+\end{itemize}
+
+\textbf{Conservación del \texttt{signal\_id}.} El archivo de \textit{projection boxes} preserva la noción de identidad persistente del HD-Map: cada \textit{box} lleva su \texttt{signal\_id} estable entre \textit{frames}. La etapa de \textit{tracking} sigue operando con la misma lógica del original, indexando el historial por \texttt{signal\_id}. Si las \textit{boxes} cambian de posición pero mantienen su \texttt{signal\_id}, el \textit{tracking} no se confunde, exactamente como en Apollo.
+
+\subsection{Cámara Única}
+
+\textbf{En Apollo.} La etapa de \textit{region proposal} elige entre cámaras (\textit{telephoto} 25\,mm vs. \textit{wide-angle} 6\,mm) según dónde quedan las \texttt{projection\_roi}s en el campo de visión de cada una.
+
+\textbf{En el módulo aislado.} Se asume una sola cámara. No hay lógica de selección.
+
+\textbf{Implicación funcional.} Esta lógica está atada al hardware del vehículo y al HD-Map (que es lo que permite saber dónde queda cada semáforo en cada campo de visión). Para el resto del pipeline, sin embargo, la cámara es transparente: las etapas 2 a 5 reciben una imagen y \textit{projection boxes} y no preguntan de dónde vinieron. El cambio se localiza estrictamente en el preprocesamiento.
+
+\subsection{Filtros Explícitos en la Detección}
+
+\textbf{En Apollo.} El código de detección hace filtros básicos (área $> 0$, dentro de la región válida de la imagen). Otros filtros (tamaño mínimo/máximo, \textit{aspect ratio}, confianza mínima) están implícitos en la arquitectura de la red o se postergan a etapas posteriores.
+
+\textbf{En el módulo aislado.} Se incorporaron filtros explícitos sobre las detecciones antes de pasarlas a la asignación:
+
+\begin{itemize}
+    \item Tamaño: $5\text{\,px} \leq \text{lado} \leq 300\text{\,px}$.
+    \item \textit{Aspect ratio}: $0.5 \leq h/w \leq 8.0$.
+    \item Confianza mínima: \textit{score} $\geq 0.3$.
+\end{itemize}
+
+\textbf{Implicación funcional.} Estos filtros son \textbf{más estrictos} que los del original, no más laxos. Cualquier detección que en el módulo aislado pase los filtros, también la habría aceptado Apollo. La dirección del cambio es importante: el módulo aislado puede descartar algunos falsos positivos que el original aceptaría, pero no inventa detecciones que el original rechazaría. La equivalencia funcional se mantiene en el sentido de ``mismas detecciones o un subconjunto''.
+
+\subsection{Lo que se Conserva (lo Importante)}
+
+Lo que se preservó exactamente del original:
+
+\begin{itemize}
+    \item Las cinco etapas y su orden.
+    \item Los cuatro modelos pre-entrenados (mismos pesos).
+    \item Todos los parámetros numéricos enumerados en la Tabla~\ref{tab:parametros}.
+    \item Las cuatro reglas de \textit{tracking} (GREEN$\to$YELLOW$\to$RED, histéresis para BLACK, \textit{blink} solo en verde, \textit{reset} a 1.5\,s).
+    \item El \texttt{signal\_id} como llave de identidad para el \textit{tracking}.
+    \item El comportamiento de \texttt{Prob2Color} (\textit{threshold} 0.5, forzar BLACK debajo del umbral).
+    \item La ponderación 70/30 en la matriz de costos del húngaro, el \textit{clip} a 0.9 del \textit{score} y la penalización fuera del \texttt{crop\_roi}.
+    \item Los tres niveles de NMS y sus \textit{thresholds}.
+\end{itemize}
+
+\subsection{Lo que se Reemplazó por una Interfaz Simplificada}
+
+\begin{itemize}
+    \item HD-Map dinámico + proyección 3D$\to$2D + pose del vehículo $\to$ archivo de \textit{projection boxes} pre-calculadas con \texttt{signal\_id}.
+    \item Selección automática multi-cámara $\to$ cámara única.
+    \item Mensajería por CyberRT \textit{channels} $\to$ llamada Python directa al \texttt{pipeline}.
+\end{itemize}
+
+\subsection{Lo que se Descartó}
+
+\begin{itemize}
+    \item CyberRT como \textit{framework} de ejecución.
+    \item Bazel como sistema de \textit{build}.
+    \item Docker como entorno de despliegue.
+    \item La integración con otros módulos de Apollo (planificación, control).
+    \item La calibración dinámica de cámara y el manejo de poses 6DOF.
+\end{itemize}
+
+\subsection{Comparación Visual}
+
+La Figura~\ref{fig:pipeline_comparison} muestra los dos pipelines lado a lado, marcando con $=$ las etapas funcionalmente equivalentes y con $\neq$ la única etapa cuya interfaz se simplificó. La Figura~\ref{fig:pipeline_apollo} es el pipeline de Apollo desplegado completo; la Figura~\ref{fig:pipeline_aislado} es la versión aislada.
+
+\input{figures/pipeline_comparison}
+
+\section{Supuestos de Equivalencia Funcional}
+\label{sec:supuestos_equivalencia}
+
+Cerramos el capítulo con una enumeración explícita de los supuestos bajo los cuales aceptamos que el módulo aislado es funcionalmente equivalente al original. Esto es importante porque la equivalencia no fue verificada empíricamente: no ejecutamos el TLR original sobre las mismas entradas para comparar salidas. Como se discutió en la sección~\ref{sec:recorte_fallido}, el costo de ese \textit{setup} es desproporcionado al objetivo. La equivalencia se afirma por construcción, y depende de los supuestos que siguen.
+
+\subsection{Supuestos Sobre los Parámetros}
+
+\begin{enumerate}
+    \item \textbf{Extracción correcta de parámetros.} Los valores numéricos (\textit{thresholds}, sigmas, pesos, ventanas temporales) se extrajeron por análisis estático del código fuente de Apollo, sin observar su comportamiento en tiempo de ejecución. Suponemos que el código analizado refleja los parámetros efectivamente usados; no detectamos sobrescrituras en tiempo de \textit{runtime} ni configuraciones externas que los modifiquen.
+
+    \item \textbf{Conservación tras la copia.} En el módulo aislado, cada parámetro se transcribió manualmente. Suponemos que no hubo errores de transcripción y que las constantes del código Python coinciden bit a bit con las del código C++ original.
+\end{enumerate}
+
+\subsection{Supuestos Sobre los Modelos}
+
+\begin{enumerate}
+    \setcounter{enumi}{2}
+    \item \textbf{Equivalencia de la conversión Caffe$\to$PyTorch.} Suponemos que la arquitectura reconstruida en PyTorch es matemáticamente equivalente a la definida por los \texttt{.prototxt} originales: mismas capas, misma topología, misma aritmética en \texttt{float32}. Diferencias en orden de operaciones que producen variaciones a nivel de \textit{epsilon} numérico se consideran aceptables.
+
+    \item \textbf{Carga correcta de pesos.} Los pesos pre-entrenados se cargaron desde los \texttt{.caffemodel} originales. Suponemos que el mapeo de nombres de capa y el orden de los tensores se preservó (por ejemplo, que el orden BGR/RGB de los canales de entrada al \textit{detector} coincide con el esperado).
+
+    \item \textbf{Determinismo de inferencia.} Suponemos que para una misma entrada, ambos \textit{runtimes} (Caffe y PyTorch) producen el mismo \textit{output} salvo error numérico despreciable. No verificamos esta propiedad de forma exhaustiva.
+\end{enumerate}
+
+\subsection{Supuestos Sobre las Reglas}
+
+\begin{enumerate}
+    \setcounter{enumi}{5}
+    \item \textbf{Cobertura de las reglas.} Las cuatro reglas de \textit{tracking} explícitas (GREEN$\to$YELLOW$\to$RED, histéresis para BLACK, \textit{blink} en verde, \textit{reset} a 1.5\,s) cubren la lógica de \texttt{semantic\_decision.cc}. Suponemos que no hay reglas adicionales escondidas en utilidades llamadas indirectamente desde ese archivo.
+
+    \item \textbf{Equivalencia del húngaro.} Suponemos que la implementación del algoritmo húngaro en \texttt{hungarian\_optimizer.py} produce las mismas asignaciones que la implementación de Apollo para la misma matriz de costos, salvo empates resueltos en orden distinto. En presencia de costos exactamente iguales, los empates pueden romperse de forma diferente; consideramos esto aceptable porque las matrices reales casi nunca tienen costos exactamente iguales.
+
+    \item \textbf{Equivalencia del NMS.} Apollo ordena \textit{scores} ascendentemente y procesa desde el final; el módulo aislado ordena descendentemente y procesa desde el inicio. Suponemos que el orden efectivo de procesamiento es el mismo, así que las detecciones suprimidas son las mismas.
+\end{enumerate}
+
+\subsection{Supuestos Sobre las Interfaces Simplificadas}
+
+\begin{enumerate}
+    \setcounter{enumi}{8}
+    \item \textbf{Calidad de las \textit{projection boxes} pre-calculadas.} Suponemos que el archivo de entrada provisto al módulo aislado representa razonablemente lo que Apollo habría calculado dinámicamente desde el HD-Map. Si las \textit{boxes} están sistemáticamente desplazadas (por error de calibración inicial), las detecciones del módulo aislado serán peores que las de Apollo en condiciones equivalentes, aunque el comportamiento del módulo en sí siga siendo correcto.
+
+    \item \textbf{Estabilidad del \texttt{signal\_id}.} Suponemos que los \texttt{signal\_id}s del archivo son estables entre \textit{frames} para el mismo semáforo físico. El \textit{tracking} depende de esto: una asignación errónea de \texttt{signal\_id} en el archivo de entrada producirá un comportamiento incorrecto del \textit{tracking} que no es atribuible al módulo aislado.
+
+    \item \textbf{Una sola cámara.} El módulo aislado opera asumiendo una única cámara. En escenarios donde Apollo cambiaría dinámicamente entre \textit{telephoto} y \textit{wide-angle}, la equivalencia funcional solo se mantiene si la cámara provista al módulo aislado es la que Apollo habría elegido.
+
+    \item \textbf{Cobertura del \textit{voting} no implementado.} Apollo tiene código de \textit{voting} por \texttt{semantic\_id} que no se ejecuta efectivamente (Hallazgo 2 del Capítulo~\ref{cap:analisis_apollo}). El módulo aislado no implementa este \textit{voting}. Suponemos que esto no introduce diferencias respecto al comportamiento real de Apollo, ya que tampoco aporta nada allí.
+\end{enumerate}
+
+\subsection{Implicación}
+
+Bajo estos doce supuestos, aceptamos que el módulo aislado se comporta como el TLR de Apollo para entradas equivalentes. Los tests del Capítulo~\ref{cap:diseno_tests} se diseñan e interpretan sobre esta base: cuando un test revela un comportamiento del módulo aislado, atribuimos ese comportamiento al TLR original. Cualquier hallazgo se entiende como una afirmación condicional: ``\textit{si} los supuestos de equivalencia se cumplen, \textit{entonces} el comportamiento observado es también el de Apollo''. La discusión sobre qué supuestos son más frágiles, y bajo qué circunstancias podrían fallar, forma parte de las limitaciones del trabajo (Capítulo~\ref{cap:conclusiones}).
+
+\section{Resumen}
+
+Este capítulo describió el proceso de aislamiento del módulo TLR. La primera aproximación, recortar el código C++ original de Apollo, se descartó por el costo desproporcionado de su infraestructura ($\sim$174\,000 líneas asociadas, CyberRT como sustrato obligatorio, Bazel/Docker/CUDA como requisitos, 1--2 meses de \textit{setup} estimados). El camino efectivo fue la reconstrucción del módulo en Python sobre la base del análisis del Capítulo~\ref{cap:analisis_apollo} y la referencia técnica del Capítulo~\ref{cap:funcionamiento_tlr}.
+
+Los cambios funcionales respecto al original están localizados: el origen de las \textit{projection boxes} pasa de un cálculo dinámico desde el HD-Map a un archivo pre-calculado con \texttt{signal\_id} estable; el sistema multi-cámara se reduce a una sola cámara; se incorporan filtros explícitos más estrictos en la detección. Las cinco etapas, los cuatro modelos pre-entrenados, todos los parámetros numéricos y las reglas de \textit{tracking} se preservan exactamente del original.
+
+La equivalencia funcional no se verificó empíricamente (Apollo no se ejecutó); se afirma por construcción, bajo doce supuestos explícitos enumerados en la sección~\ref{sec:supuestos_equivalencia}. Estos supuestos son la base sobre la cual se interpretan los tests del próximo capítulo: lo que observamos sobre el módulo aislado se atribuye al TLR de Apollo \textit{condicional} a que los supuestos se cumplan.
