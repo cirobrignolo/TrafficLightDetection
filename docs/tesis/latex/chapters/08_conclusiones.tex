@@ -5,84 +5,105 @@
 
 \subsection{Sobre la Metodología}
 
-\textbf{Reimplementar es más viable que recortar.} Para sistemas legacy complejos como Apollo, intentar recortar un módulo del sistema completo resultó inviable debido a las dependencias profundas (CyberRT, Docker, Bazel). Reimplementar desde cero, guiado por el análisis del código original, fue más efectivo.
+\textbf{Aislar fue más viable que recortar.} Para sistemas \textit{legacy} complejos como Apollo, intentar recortar un módulo del sistema completo no fue una opción realista: las 4\,800 líneas de C++ del TLR vienen acompañadas de aproximadamente 169\,000 líneas de infraestructura compartida (CyberRT, \textit{perception common}, \textit{modules common}, \textit{map module}), un sistema de \textit{build} pesado (Bazel), un entorno de despliegue específico (Docker + CUDA + GPU NVIDIA dedicada) y configuraciones extensas. El esfuerzo de \textit{setup}, sin garantías de cerrar, superaba uno o dos meses. El aislamiento por reconstrucción ---tomar el código original como especificación y reescribirlo en un entorno simple--- entregó el mismo módulo funcional en una fracción del costo, instrumentable con \textit{prints} y \textit{breakpoints}, sin dependencias de hardware específicas.
 
-\textbf{La reimplementación fuerza comprensión profunda.} El proceso de traducir código C++ a Python obligó a entender cada detalle del sistema: parámetros, reglas de negocio, casos especiales. Esta comprensión fue esencial para diseñar tests efectivos.
+\textbf{El aislamiento por reconstrucción fuerza comprensión profunda.} El proceso de leer línea por línea las cuatro carpetas del TLR para reescribirlas obligó a extraer parámetros, reglas de negocio, casos especiales y decisiones de diseño que no aparecen en la documentación oficial. La elección de Python como lenguaje de destino fue por comodidad de prototipado, no por una propiedad esencial del enfoque; lo importante no fue el lenguaje, sino que el módulo terminara extraído de su entorno y bajo control directo.
+
+\textbf{El intento de recorte no fue tiempo perdido.} Aunque la primera aproximación no produjo un módulo ejecutable, sí produjo el conocimiento conceptual del pipeline (etapas, dependencias, parámetros a alto nivel) que después alimentó tanto el análisis del Capítulo~\ref{cap:analisis_apollo} como la formulación del test del Capítulo~\ref{cap:diseno_tests}. Las preguntas que el test terminó respondiendo (¿qué hace el recognizer fuera de su distribución? ¿qué rol cumple la regla GREEN$\to$YELLOW$\to$RED?) nacieron durante esa fase fallida.
 
 \subsection{Sobre el Testing}
 
-\textbf{El conocimiento interno permite encontrar adversarios.} El test de transición verde→amarillo surgió del conocimiento de la arquitectura del clasificador y las clases de salida. Un enfoque de caja negra difícilmente habría encontrado el umbral exacto de falla de forma sistemática.
+\textbf{El conocimiento interno habilita tests que la caja negra no puede formular.} El test del Capítulo~\ref{cap:diseno_tests} se diseñó a partir de objetos internos del módulo: las cuatro clases del recognizer, la regla \texttt{Prob2Color} con su umbral 0.5, la asimetría de la regla GREEN$\to$YELLOW$\to$RED. Sin conocer la estructura interna del clasificador, un test de caja negra podría haber probado variaciones de iluminación, pero le habría costado mucho más \textit{interpretar} los resultados: por qué BLACK aparece, por qué oscila con RED, y por qué los pocos YELLOW que el recognizer sí produce en la fase de falla nunca llegan a la salida final del sistema.
 
-\textbf{El testing iterativo es natural para sistemas ML.} Sin especificaciones formales, el comportamiento correcto se descubre experimentando con el sistema. El enfoque implementar→ejecutar→observar→corregir fue más efectivo que diseñar tests exhaustivos a priori.
+\textbf{El testing iterativo se beneficia del aislamiento.} Cada variante del test ---un video nuevo, una configuración nueva de tono/luminosidad/saturación--- se procesó con una llamada Python sobre el módulo aislado, en segundos. Iterar a esa velocidad sobre Apollo habría requerido recompilar y redesplegar entre cada cambio. La velocidad de iteración no es solo cuestión de productividad: es lo que permite reformular hipótesis y refinar el test hasta encontrar el adversario.
+
+\textbf{El test produjo dos clases de resultados.} El primero, concreto: el clasificador del módulo es robusto a alteraciones cromáticas moderadas del verde y empieza a fallar a partir de la configuración del Video 5 (Tono $-100$ + luminosidad $+10$ + saturación $+20$); la falla se intensifica en el Video 6 (Tono $-110$). El umbral de falla queda ubicado entre tonos $-80$ y $-100$. El segundo, parcial: comparando la salida cruda del recognizer con la salida final del \textit{tracker}, se observan dos clases de intervención del \textit{tracker} durante la fase de falla ---histéresis BLACK$\to$RED dominante (134 correcciones combinadas en los Videos 5 y 6), y corrección YELLOW$\to$RED puntual por la regla asimétrica (3 correcciones en total: una en el Video 5 sobre el \textit{frame} 1816, dos en el Video 6 sobre los \textit{frames} 1776 y 1856)---, pero la frecuencia de la segunda es lo suficientemente baja como para que el hallazgo abra una pregunta cuantitativa más que cerrarla. La pregunta deja de ser ``¿se activó la regla?'' (sí, en tres \textit{frames}) y pasa a ser ``¿los casos observados son representativos del modo de falla o artefactos puntuales?'' (Sección~\ref{sec:trabajo_futuro_inmediato}).
 
 \subsection{Sobre el Sistema Apollo}
 
-\textbf{Decisiones de diseño no documentadas.} El análisis reveló aspectos no documentados oficialmente: ponderación 70/30 del algoritmo húngaro, ventana temporal de 1.5\,s del \textit{tracking} con histéresis, y restricción del \textit{blink detection} al color verde con umbral de 0.55\,s. La secuencia de seguridad GREEN→YELLOW→RED, en cambio, sí está documentada \cite{apollo_tlr_docs}; lo que el análisis aportó es el conjunto completo de reglas que la rodean en la implementación.
+\textbf{Decisiones de diseño no documentadas.} El análisis reveló aspectos que no aparecen en la documentación oficial: la ponderación 70/30 entre proximidad espacial y confianza del algoritmo húngaro, la ventana temporal de 1.5\,s del \textit{tracker} con histéresis, y la restricción del \textit{blink detection} al color verde con umbral de 0.55\,s. La regla GREEN$\to$YELLOW$\to$RED sí está documentada \cite{apollo_tlr_docs}; lo que el análisis aportó es el conjunto completo de reglas que la rodean en la implementación.
 
-\textbf{Funcionalidad diseñada pero no implementada.} El semantic\_id y el voting entre semáforos del mismo cruce existen en el código pero nunca se ejecutan.
+\textbf{Funcionalidad diseñada pero no efectiva.} El \texttt{semantic\_id} está hardcodeado a 0 en \texttt{traffic\_light\_region\_proposal\_component.cc:335}, lo que reduce el \textit{voting} entre semáforos del mismo cruce a una operación trivial sobre grupos de un solo elemento. La funcionalidad existe en el código pero no aporta nada en la práctica.
+
+\textbf{El TLR falla del lado conservador.} El modo de falla observado en el test no produce el peor caso posible de seguridad (que el TLR reporte GREEN cuando el semáforo real está en rojo). Las salidas erróneas son BLACK o RED, que conducen a comportamientos conservadores de la planificación (detenerse, esperar). La asimetría de la regla del \textit{tracker} contribuye a este sesgo: si el clasificador alguna vez se confunde hacia ``más permisivo'' (YELLOW después de RED), la regla lo corrige hacia ``más restrictivo''.
 
 \section{Contribuciones}
 
 \begin{enumerate}
-    \item \textbf{Metodología:} Demostración de que reimplementar + testing de caja blanca es viable para encontrar debilidades en sistemas ML complejos
+    \item \textbf{Metodología:} formulación del aislamiento por reconstrucción como herramienta para habilitar testing dirigido sobre componentes de \textit{machine learning} embebidos en sistemas legacy complejos, con la primera aproximación de recorte documentada como contraste.
 
-    \item \textbf{Análisis de Apollo:} Documentación de parámetros, reglas, y decisiones de diseño no documentadas
+    \item \textbf{Análisis funcional del TLR de Apollo:} documentación de parámetros, reglas y decisiones de diseño no explicitadas en la documentación oficial (ponderación 70/30 del algoritmo húngaro, ventana temporal de 1.5\,s con histéresis, \textit{blink detection} restringido al verde con umbral de 0.55\,s, \texttt{semantic\_id} hardcodeado a 0).
 
-    \item \textbf{Reimplementación:} Sistema equivalente al TLR de Apollo, simple de usar y testear
+    \item \textbf{Módulo aislado:} paquete Python equivalente al TLR de Apollo a nivel funcional, ejecutable sin la infraestructura del vehículo, con API simple y código modificable.
 
-    \item \textbf{Test de transición verde→amarillo:} Caracterización del umbral de falla del clasificador (Tono -100 a -110)
+    \item \textbf{Definición de supuestos de equivalencia:} doce supuestos explícitos bajo los cuales el módulo aislado se considera fiel al original, dejando claro que la equivalencia es por construcción y no empírica.
 
-    \item \textbf{Validación de hipótesis:} El conocimiento interno permite diseñar tests más efectivos que el testing de caja negra
+    \item \textbf{Test de transición verde$\to$amarillo:} caracterización del límite de robustez del clasificador del TLR, con identificación del umbral de falla (entre tono $-80$ y $-100$ con cambios acompañantes de luminosidad y saturación), discusión de la factibilidad física del escenario y análisis de las consecuencias \textit{upstream} para el sistema completo.
+
+    \item \textbf{Validación de la hipótesis:} demostración concreta de que el conocimiento interno del sistema permite diseñar y, sobre todo, \textit{interpretar} tests; sin ese conocimiento, los resultados del experimento serían ruido en lugar de un fenómeno explicable.
 \end{enumerate}
 
 \section{Limitaciones}
 
 \subsection{Del Test}
 
-\textbf{Adversario sintético.} La modificación de color se realizó digitalmente. No se verificó si corresponde a escenarios físicamente realizables (condiciones de iluminación específicas, tipos de semáforo, etc.).
+\textbf{Adversario sintético.} La alteración de color se realiza digitalmente con un editor de video. El Capítulo~\ref{cap:resultados} discute en qué condiciones físicas reales (luz solar baja al amanecer/atardecer, reflejos cálidos, cámaras con balance de blancos desplazado, semáforos con LEDs envejecidos) podría producirse un efecto cromáticamente parecido, pero el test no demuestra que esas condiciones específicas reproduzcan exactamente el modo de falla.
 
-\textbf{Cobertura limitada.} Solo se exploró la frontera verde→amarillo. Otros límites de decisión no fueron testeados sistemáticamente.
+\textbf{Cobertura limitada.} Solo se exploró una dirección de alteración (verde hacia tonos cálidos). Otras fronteras del clasificador (amarillo$\to$rojo, rojo$\to$apagado, comportamiento bajo oclusiones que activen el \textit{reset} del \textit{tracker}) no fueron testeadas sistemáticamente.
 
-\subsection{De la Reimplementación}
+\textbf{Dos configuraciones críticas sobre una sola escena.} La corrida procesó los 1\,859 \textit{frames} completos del video sobre dos configuraciones del lado fallido del umbral (Video 5: Tono $-100$ + luminosidad $+10$ + saturación $+20$; Video 6: Tono $-110$ + luminosidad $+10$ + saturación $+20$) y un único video base. Las tres activaciones observadas de la regla GREEN$\to$YELLOW$\to$RED son pocas como para afirmar si son representativas del modo de falla o si son artefactos puntuales que se comportarían distinto bajo otras condiciones. Cerrar esa duda requiere probar configuraciones intermedias del parámetro de tono y repetir el test sobre escenas distintas.
 
-\textbf{Projection boxes pre-calculadas.} No se reimplementó la generación dinámica desde HD-Map, lo cual limita ciertos escenarios de testing.
+\textbf{Cobertura limitada de configuraciones.} Aunque el video se procesó a 30\,fps completos (1\,859 \textit{frames}) sobre las seis configuraciones, solo dos configuraciones quedaron del lado fallido del umbral (Videos 5 y 6), sin barrer valores intermedios de tono entre $-80$ y $-100$, ni explorar combinaciones distintas de luminosidad y saturación cerca del umbral. Refinar el punto exacto donde el clasificador empieza a fallar requiere ese barrido.
 
-\textbf{Validación por construcción.} La equivalencia con Apollo se garantizó mediante análisis de código, no mediante comparación empírica exhaustiva de outputs.
+\subsection{Del Módulo Aislado}
+
+\textbf{Interfaz simplificada con \textit{projection boxes}.} El módulo aislado no reproduce la generación dinámica de \textit{projection boxes} desde el HD-Map: las recibe pre-calculadas en un archivo, con \texttt{signal\_id} estable. Esto limita ciertos escenarios de testing que dependen de errores de pose o de calibración dinámica de cámara.
+
+\textbf{Equivalencia por construcción.} La equivalencia funcional con Apollo no se validó empíricamente comparando salidas sobre las mismas entradas. La equivalencia se afirma por construcción, bajo los doce supuestos explícitos enumerados en la Sección~\ref{sec:supuestos_equivalencia} del Capítulo~\ref{cap:reimplementacion}. Todo hallazgo del trabajo es condicional a que esos supuestos se cumplan.
 
 \subsection{De la Generalización}
 
-Los hallazgos son específicos del módulo TLR de Apollo. No se puede afirmar que la metodología funcione igual para otros módulos o sistemas.
+Los hallazgos son específicos del módulo TLR de Apollo y del test concreto que se diseñó. No podemos afirmar a priori que la metodología produzca resultados similares en otros módulos de Apollo o en otros sistemas \textit{legacy}, aunque el patrón ---intento de recorte fallido, análisis del código, aislamiento por reconstrucción, testing con conocimiento interno--- parece transferible al menos en términos conceptuales.
 
 \section{Trabajo Futuro}
 
 \subsection{Extensiones Inmediatas}
+\label{sec:trabajo_futuro_inmediato}
 
 \begin{itemize}
-    \item Refinar el test de transición: encontrar umbral exacto entre Tono -100 y -110
-    \item Explorar otras fronteras de decisión: amarillo→rojo, verde→black
-    \item Verificar si el adversario sintético corresponde a escenarios físicos reales
+    \item \textbf{Resolver si la activación de la regla del \textit{tracker} es estructural o puntual.} La corrida sobre los dos videos fallidos detectó tres \textit{frames} donde el recognizer reportó YELLOW espurio (1816 en el Video 5; 1776 y 1856 en el Video 6) y el \textit{tracker} los corrigió a RED. La frecuencia (3 sobre $\sim$229 detecciones combinadas de las fases de falla) es lo suficientemente baja como para que el hallazgo sea informativo y no concluyente. Probar configuraciones intermedias del parámetro de tono entre $-80$ y $-100$ y repetir el test sobre escenas distintas permitiría determinar si el YELLOW espurio aparece sistemáticamente en la fase de falla o si es un fenómeno puntual.
+
+    \item \textbf{Refinar el umbral de falla.} Generar videos con tonos intermedios entre $-80$ y $-100$ (por ejemplo $-85$, $-90$, $-95$) para acotar mejor la frontera entre robustez y falla. Repetir variando luminosidad y saturación por separado para entender si el modo de falla depende del tono solo o requiere la combinación de los tres parámetros.
+
+    \item \textbf{Explorar otras fronteras del recognizer.} Aplicar la misma metodología a otros colores: alterar el rojo del semáforo y observar si el recognizer lo confunde con amarillo, alterar el amarillo y ver si lo confunde con verde o con rojo. Cada frontera caracterizada agrega información concreta sobre la topología del espacio de \textit{features} del modelo.
+
+    \item \textbf{Activar deliberadamente la regla de seguridad.} Diseñar un experimento donde el recognizer reporte YELLOW después de RED con certeza (por ejemplo, intercalando \textit{frames} con un semáforo amarillo real entre \textit{frames} con un semáforo rojo real, sobre videos con condiciones controladas). Esto permitiría observar y caracterizar la regla GREEN$\to$YELLOW$\to$RED actuando de forma explícita.
 \end{itemize}
 
 \subsection{Extensiones a Mediano Plazo}
 
 \begin{itemize}
-    \item Aplicar la metodología a otros módulos de Apollo (detección de peatones, carriles)
-    \item Implementar el semantic\_id y voting para evaluar su impacto
-    \item Crear dataset de evaluación con ground truth para métricas cuantitativas
+    \item \textbf{Validar empíricamente la equivalencia con Apollo.} Configurar Apollo (asumiendo el costo de \textit{setup} del Apéndice~\ref{apendice:recorte_fallido}) y correr ambos sistemas sobre el mismo conjunto de entradas para comparar salidas. Reduciría el espacio de supuestos del Capítulo~\ref{cap:reimplementacion} de doce a un subconjunto más pequeño.
+
+    \item \textbf{Aplicar la metodología a otros módulos de Apollo.} Detección de peatones, detección de carriles, planificación local. Testear si el patrón ``recorte fallido $\to$ aislamiento por reconstrucción $\to$ testing con conocimiento interno'' se generaliza, o si depende de propiedades específicas del TLR (espacio de salida pequeño, dependencia clara de cámaras).
+
+    \item \textbf{Estudiar el impacto del \texttt{semantic\_id} si se implementara.} Modificar el módulo aislado para usar \texttt{semantic\_id} real y \textit{voting} entre semáforos del mismo cruce, y evaluar cuánto mejora la robustez en escenarios con contradicciones entre detecciones individuales.
 \end{itemize}
 
 \subsection{Direcciones de Investigación}
 
 \begin{itemize}
-    \item Formalizar el proceso de derivar tests a partir de conocimiento interno
-    \item Desarrollar métricas de equivalencia entre implementaciones de sistemas ML
-    \item Explorar automatización del proceso de análisis y reimplementación
+    \item \textbf{Formalización del aislamiento por reconstrucción.} Caracterizar qué propiedades de un módulo lo hacen apto para este enfoque (acoplamiento estructural vs.\ acoplamiento informacional, dependencias de hardware, tamaño relativo al sistema), y formular criterios para decidir cuándo conviene aislar versus invertir en levantar el sistema completo.
+
+    \item \textbf{Métricas de equivalencia funcional.} Desarrollar formas de validar la equivalencia entre dos implementaciones de un módulo de \textit{machine learning} más allá de la comparación por construcción. Esto incluiría métricas de equivalencia distribucional (¿qué tan parecidas son las distribuciones de salida sobre la misma distribución de entradas?) y métricas de equivalencia comportamental sobre escenarios sintéticos.
+
+    \item \textbf{Derivación sistemática de tests a partir de código.} Explorar herramientas que extraigan automáticamente parámetros críticos, fronteras de decisión y reglas asimétricas del código de un módulo, y propongan casos de test específicos a partir de ese análisis. El test del Capítulo~\ref{cap:diseno_tests} se diseñó a mano; una iteración del enfoque podría usar ese mismo proceso de manera sistemática.
 \end{itemize}
 
 \section{Reflexión Final}
 
-Este trabajo demostró que para testear efectivamente un sistema ML complejo, a veces es necesario \textbf{focalizar}: elegir un subsistema, comprenderlo profundamente, y diseñar tests específicos basados en ese conocimiento.
+Para testear efectivamente un sistema de \textit{machine learning} embebido en una infraestructura compleja, no alcanza con ejercitarlo desde afuera. La efectividad del testing depende de poder ver el sistema desde adentro: conocer sus parámetros, sus reglas, sus casos especiales, sus decisiones asimétricas. Ese conocimiento, sobre un sistema como Apollo, no se obtiene leyendo la documentación. Se obtiene leyendo el código. Y leer el código de manera útil ---hasta el nivel de poder ejercitarlo, instrumentarlo y reformularlo--- requiere extraerlo del entorno donde vive.
 
-La complejidad de sistemas como Apollo hace impracticable el testing exhaustivo del sistema completo. Pero si recortamos un subsistema y lo reimplementamos de forma equivalente, ganamos control y comprensión que nos permiten encontrar adversarios de forma sistemática.
+Este trabajo intentó dos caminos para conseguir esa extracción. El primero ---recortar el código original--- no cerró por el peso de la infraestructura asociada. El segundo ---aislar por reconstrucción--- sí cerró, y permitió diseñar un test que reveló a la vez algo sobre el clasificador (su robustez y su modo de falla concreto), algo sobre el \textit{tracker} (las dos explicaciones plausibles, ambas informativas) y algo sobre el diseño del TLR de Apollo (que sus reglas de seguridad están pensadas para filtrar el peor caso, aunque el experimento expuso bordes donde sus garantías son menos claras de lo que sugiere la documentación).
 
-La contribución principal no es la reimplementación en sí, sino la \textbf{demostración de que este enfoque funciona}: el conocimiento adquirido durante la reimplementación permitió diseñar un test que encontró el umbral exacto de falla del clasificador.
+La contribución principal de este trabajo no es el módulo aislado en sí: es la demostración de que la cadena \textit{recorte fallido $\to$ aislamiento $\to$ testing dirigido} produce, sobre un sistema concreto, resultados que ni el testing de caja negra ni el análisis estático aislado habrían producido. Las preguntas sembradas durante el recorte se respondieron durante el aislamiento; las que quedaron abiertas tienen, ahora, un camino claro para cerrarse.

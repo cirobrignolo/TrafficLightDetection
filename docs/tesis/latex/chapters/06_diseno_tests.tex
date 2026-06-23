@@ -1,197 +1,287 @@
 \chapter{Testing}
 \label{cap:diseno_tests}
 
-Este capítulo describe el proceso de diseño de tests basado en el conocimiento interno del sistema adquirido durante la reimplementación. El objetivo era encontrar \textbf{adversarios}: casos de test que revelen debilidades del sistema mediante análisis de caja blanca.
+Este capítulo describe el diseño y la ejecución del test que se realizó sobre el módulo aislado. El objetivo era encontrar \textbf{adversarios}: casos de entrada que revelaran debilidades del sistema, aprovechando el conocimiento interno acumulado durante el análisis y el aislamiento (Capítulos~\ref{cap:analisis_apollo}--\ref{cap:reimplementacion}).
+
+El capítulo está organizado así: primero, el enfoque de testing y la pregunta de investigación; después, el diseño y la ejecución del test de transición verde$\to$amarillo, con énfasis en \textit{dónde} se inyecta la perturbación, \textit{cómo es el video de entrada}, \textit{qué} se modifica de ese video y \textit{qué} responde el sistema en cada caso; finalmente, la interpretación a la luz de las reglas del \textit{tracker} y las limitaciones del enfoque.
 
 \section{Enfoque: Testing de Caja Blanca}
 
 \subsection{Hipótesis}
 
-La hipótesis central de este trabajo es que el conocimiento interno del sistema permite diseñar tests más efectivos que el testing de caja negra:
+La hipótesis central del trabajo es que el conocimiento interno del sistema permite diseñar tests más efectivos que los de caja negra:
 
 \begin{itemize}
-    \item Podemos identificar \textbf{parámetros críticos} y testear cerca de sus límites
-    \item Podemos entender \textbf{modos de falla} analizando la lógica del clasificador
-    \item Podemos diseñar \textbf{adversarios} que exploten las características del sistema
+    \item Podemos identificar \textbf{parámetros críticos} (\textit{thresholds}, pesos) y testear cerca de sus límites.
+    \item Podemos entender \textbf{modos de falla} analizando la lógica del clasificador.
+    \item Podemos diseñar \textbf{adversarios} que exploten reglas específicas del pipeline.
 \end{itemize}
 
 \subsection{Conocimiento Disponible}
 
-Del proceso de reimplementación, teníamos conocimiento detallado sobre:
+Del proceso de análisis y aislamiento (Capítulos~\ref{cap:funcionamiento_tlr}--\ref{cap:reimplementacion}) teníamos conocimiento detallado sobre:
 
 \begin{itemize}
-    \item \textbf{Arquitectura del recognizer:} 3 clasificadores CNN (vertical, horizontal, quad)
-    \item \textbf{Clases de salida:} BLACK, RED, YELLOW, GREEN
-    \item \textbf{Normalización:} means BGR específicos, scale factor 0.01
-    \item \textbf{Threshold de decisión:} probabilidad $>$ 0.5 para clasificar
+    \item \textbf{Arquitectura del recognizer:} tres clasificadores CNN especializados por orientación (vertical, horizontal, \textit{quad}).
+    \item \textbf{Clases de salida del recognizer:} BLACK, RED, YELLOW, GREEN.
+    \item \textbf{Normalización:} medias BGR específicas y factor de escala 0.01.
+    \item \textbf{\texttt{Prob2Color}:} si la probabilidad máxima del recognizer es menor a 0.5, se fuerza el resultado a BLACK; en caso contrario se devuelve la clase de mayor probabilidad (§\ref{sec:funcionamiento_reconocimiento}).
+    \item \textbf{Reglas del \textit{tracker}:} ventana temporal de 1.5\,s con cuatro reglas concretas (§\ref{sec:funcionamiento_tracking}), entre ellas la regla de seguridad asimétrica GREEN$\to$YELLOW$\to$RED.
 \end{itemize}
 
 \subsection{Pregunta de Investigación}
 
-La pregunta que guió el diseño del test fue:
+La pregunta que guió este test fue:
 
 \begin{quote}
-\textit{¿Cuál es el punto exacto donde el sistema comienza a confundir el color verde con amarillo?}
+\textit{¿Hasta qué punto el clasificador del módulo TLR sigue reconociendo un semáforo verde cuyo color ha sido alterado progresivamente hacia el amarillo, y cómo reacciona el \textit{tracker} cuando ese reconocimiento falla?}
 \end{quote}
 
-Esta pregunta surge del conocimiento de que verde y amarillo son colores adyacentes en el espacio de color, y que el clasificador debe tener un límite de decisión entre ellos.
+La pregunta tiene dos partes ligadas. La primera apunta al recognizer: identificar la magnitud de alteración a partir de la cual deja de clasificar como GREEN un semáforo que sigue estando físicamente en su fase verde. La segunda apunta al \textit{tracker}: observar si las reglas de transición temporal (GREEN$\to$YELLOW se acepta, RED$\to$YELLOW se rechaza) protegen al sistema cuando el recognizer se equivoca, o si lo dejan pasar.
 
-\section{Test de Transición Verde → Amarillo}
+\section{Test de Transición Verde $\to$ Amarillo}
 
-\subsection{Diseño del Test}
+\subsection{El Video de Entrada}
+\label{sec:test_video_entrada}
 
-\textbf{Idea:} Modificar gradualmente el color de un semáforo verde hacia amarillo hasta encontrar el punto donde el sistema cambia su clasificación.
+El video utilizado contiene un \textbf{ciclo completo del semáforo en operación normal}, no un semáforo estático en verde. El video tiene 1\,859 \textit{frames} a 30\,fps, y su estructura temporal es la siguiente:
 
-\textbf{Metodología:}
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Rango de frames} & \textbf{Estado del semáforo} & \textbf{Duración} \\
+\hline
+0--664 & VERDE (fase verde inicial) & 665 \textit{frames} ($\sim$22\,s) \\
+665--754 & AMARILLO (transición real) & 90 \textit{frames} ($\sim$3\,s) \\
+755--1775 & ROJO & 1021 \textit{frames} ($\sim$34\,s) \\
+1776--1858 & VERDE MODIFICADO (la perturbación) & 83 \textit{frames} ($\sim$3\,s) \\
+\hline
+\end{tabular}
+\caption{Estructura temporal del ciclo del semáforo en el video. La fase verde inicial es el verde original sin alterar; las fases amarillo y rojo del ciclo permanecen sin alterar en todos los videos del test; la fase final (\textit{frames} 1776 en adelante) es donde se aplica la modificación del color verde.}
+\label{tab:ciclo_natural}
+\end{table}
+
+Este detalle es importante porque la perturbación del test se aplica \textit{solamente} a partir del \textit{frame} 1776, modificando el verde del semáforo en la fase final del ciclo. Las fases verde inicial, amarillo y rojo del ciclo natural quedan idénticas en todos los videos del test.
+
+\subsection{Dónde se Inyecta la Perturbación}
+
+\textbf{La perturbación es \textit{pre-pipeline}.} La alteración del color no se hace dentro del módulo aislado: se hace \textit{antes}, sobre el archivo de video. Se generan varias copias del video original con distintos parámetros de alteración usando un editor externo (Adobe Premiere Pro 2021), y cada uno de esos videos alterados se le entrega al módulo aislado como entrada, sin tocar ni una línea del código del pipeline. Las cinco etapas del módulo (preprocesamiento, detección, asignación, reconocimiento, \textit{tracking}) se ejecutan exactamente como las describe el Capítulo~\ref{cap:funcionamiento_tlr}; lo único que cambia entre corridas son los píxeles del video que les llegan.
+
+La Figura~\ref{fig:flujo_test} muestra el flujo conceptual.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=0.6cm,
+    block/.style={rectangle, draw, rounded corners, minimum width=3.6cm, minimum height=0.8cm, align=center, font=\small},
+    io/.style={rectangle, draw, dashed, rounded corners, minimum width=3.6cm, minimum height=0.8cm, align=center, font=\small\itshape},
+    mod/.style={block, fill=orange!20},
+    pipe/.style={block, fill=blue!10},
+    arrow/.style={-{Latex[length=2.5mm]}, thick}
+]
+    \node[io] (orig) {Video original (ciclo verde$\to$amarillo$\to$rojo$\to$verde)};
+    \node[mod, below=of orig] (premiere) {Premiere Pro: efecto ``Cambiar color''\\(solo sobre el verde del semáforo)};
+    \node[io, below=of premiere] (alterado) {Video alterado (uno por configuración)};
+    \node[pipe, below=of alterado] (pipeline) {Módulo aislado completo\\(preproc.\ + det.\ + asig.\ + rec.\ + track.)};
+    \node[io, below=of pipeline] (out) {Output observado por \textit{frame}};
+
+    \draw[arrow] (orig) -- (premiere);
+    \draw[arrow] (premiere) -- (alterado);
+    \draw[arrow] (alterado) -- (pipeline);
+    \draw[arrow] (pipeline) -- (out);
+\end{tikzpicture}
+\caption{Flujo del test. La alteración del color (naranja) se hace antes del pipeline; el módulo aislado (azul) se ejecuta sin modificaciones sobre cada video alterado y se observa la salida \textit{frame} a \textit{frame}.}
+\label{fig:flujo_test}
+\end{figure}
+
+\subsection{Qué se Modifica del Video}
+
+El efecto utilizado fue ``Cambiar color'' (Corrección de color), seleccionando con el gotero el verde del semáforo del video original. La tolerancia coincidente se mantuvo entre 15--30\,\% y el suavizado entre 10--15\,\%, ambos sobre RGB. Como el color se selecciona específicamente sobre el verde del semáforo, el efecto \textbf{solo modifica los píxeles que se parecen a ese verde}: el resto del cuadro (cielo, pavimento, demás semáforos, transiciones del ciclo) queda intacto, y las fases amarillo y rojo del ciclo del semáforo también quedan intactas porque sus colores no entran en el rango de tolerancia.
+
+Sobre los píxeles afectados, se ajustaron tres parámetros: \textbf{tono} (rotación de color), \textbf{luminosidad} y \textbf{saturación}. Se generaron seis videos con configuraciones progresivamente más fuertes.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|c|c|c|c|p{4cm}|}
+\hline
+\textbf{Video} & \textbf{Tono} & \textbf{Luminosidad} & \textbf{Saturación} & \textbf{Color resultante} \\
+\hline
+1 & 0 & 0 & 0 & Verde original \\
+2 & $-20$ & $+10$ & $+10$ & Verde-amarillento \\
+3 & $-65$ & 0 & $+30$ & Amarillo-verdoso \\
+4 & $-80$ & 0 & $+30$ & Amarillo \\
+5 & $-100$ & $+10$ & $+20$ & Amarillo intenso \\
+6 & $-110$ & $+10$ & $+20$ & Ámbar (atardecer) \\
+\hline
+\end{tabular}
+\caption{Parámetros de alteración por video. Cada configuración produce un verde de semáforo progresivamente más alejado del verde original, hasta llegar a un ámbar tipo iluminación de atardecer.}
+\label{tab:videos_test}
+\end{table}
+
+\subsection{Ejecución del Test}
+
+Cada uno de los seis videos se procesó con el módulo aislado, registrando para cada \textit{frame} (de los 1\,859 \textit{frames} totales del video, a 30\,fps) la salida del recognizer (color clasificado por la red) y la salida del \textit{tracker} (color revisado tras aplicar las reglas temporales). Esto permite separar lo que clasifica directamente la CNN de lo que el \textit{tracker} corrige a partir del historial, comparando \texttt{pred\_color} (output del recognizer) con \texttt{final\_color} (output del \textit{tracker}) en una columna por \textit{frame}.
+
+\subsection{Resultados del Recognizer}
+
+\subsubsection{Videos 1--4: el Sistema Funciona Correctamente (con ajustes del \textit{tracker} en el video 4)}
+
+En los cuatro primeros videos, el recognizer clasifica el semáforo \textbf{correctamente en todo el ciclo}. La fase verde inicial (\textit{frames} 0--664), el amarillo natural (665--754) y el rojo (755--1775) reciben las clasificaciones esperadas al 100\,\% de los \textit{frames}. La fase final con el verde modificado (\textit{frames} 1776--1858) también se clasifica como GREEN. Los conteos concretos así lo muestran: en los videos 1 a 3 (alteraciones suaves) la salida del recognizer no produce ni un solo BLACK ni YELLOW espurio en toda la fase de verde modificado; en el video 4 (tono $-80$) aparecen 7 BLACK aislados que el \textit{tracker} amortigua manteniendo el color encendido del historial, así que la salida final sigue siendo GREEN (82) con apenas un RED (1) en el primer \textit{frame} de la fase.
+
+\textbf{Lectura inicial:} el clasificador es \textbf{notablemente robusto} a alteraciones moderadas del verde. Tolera modificaciones de tono hasta $-80$ acompañadas de cambios de luminosidad y saturación sin perder la clasificación correcta, y entre $-65$ y $-80$ visualmente el verde del semáforo ya empieza a verse claramente amarillento al ojo humano.
+
+\subsubsection{Video 5 (Tono $-100$): el Sistema Ya Falla}
+
+A partir del video 5 (tono $-100$ + luminosidad $+10$ + saturación $+20$) el recognizer deja de clasificar el verde modificado como GREEN. La salida del recognizer en la fase de verde modificado es ahora una mezcla de BLACK (64), RED (38) y un YELLOW espurio en el \textit{frame} 1816 (signal\_0). El \textit{tracker} amortigua los BLACK por histéresis y corrige el YELLOW por la regla de seguridad asimétrica, pero el resultado final es RED en las 103 detecciones de la fase, sin un solo GREEN. \textbf{Es una falla del sistema}, similar en estructura a la que se observa de manera más fuerte en el video 6 que sigue. El umbral de falla del clasificador queda entonces ubicado entre los tonos $-80$ y $-100$.
+
+\subsubsection{Video 6 (Tono $-110$, Ámbar): Punto de Falla}
+
+En el sexto video, con la alteración más fuerte (tono $-110$, similar a una iluminación de atardecer), el sistema deja de comportarse como en los videos anteriores. La Tabla~\ref{tab:fases_video6} cruza las cuatro fases del ciclo del semáforo con las salidas observadas del recognizer y del \textit{tracker}, frente a lo que el módulo \textit{debería} reportar para esa fase.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{|c|p{2.8cm}|c|p{3.5cm}|p{2.6cm}|p{2cm}|}
+\hline
+\textbf{Frames} & \textbf{Fase del ciclo} & \textbf{Esperado} & \textbf{Recognizer (pred)} & \textbf{Tracker (final)} & \textbf{Modif} \\
+\hline
+0--664 & Verde natural & GREEN & green (100\,\%) & green & 0 \\
+\hline
+665--754 & Amarillo natural & YELLOW & yellow (100\,\%) & yellow & 0 \\
+\hline
+755--1775 & Rojo natural & RED & red (100\,\%) & red & 0 \\
+\hline
+1776--1858 & VERDE MODIFICADO & GREEN & black 73, red 51, yellow 2 & red 123, black 3 & 72 \\
+\hline
+\end{tabular}
+\caption{Salidas del recognizer y del \textit{tracker} en el Video 6, agrupadas por fase del ciclo del semáforo. Conteos en cantidad de detecciones (cada \textit{frame} produce típicamente dos detecciones, una por semáforo).}
+\label{tab:fases_video6}
+\end{table}
+
+\textbf{Lectura del cuadro.} Las tres primeras fases corresponden al ciclo natural del semáforo, que no fue alterado: la modificación de Premiere se aplicó solamente sobre los píxeles verdes del semáforo en la fase final. En esas tres fases el recognizer hace su trabajo perfectamente y el \textit{tracker} no tiene nada que corregir. \textbf{La falla está concentrada exclusivamente en los 83 \textit{frames} de la fase final}, donde el semáforo \textit{realmente} muestra verde modificado pero el recognizer no lo reconoce: clasifica 73 detecciones como BLACK, 51 como RED y solo 2 como YELLOW (en los \textit{frames} 1776 y 1856, ver §6.2.6). La salida final del \textit{tracker} es RED en 123 detecciones y BLACK en 3, lo que la planificación interpretaría como un semáforo en rojo cuando en realidad volvió a verde.
+
+\textbf{Por qué aparece BLACK.} El recognizer tiene cuatro clases de salida posibles: GREEN, YELLOW, RED y BLACK. BLACK aparece como resultado de la regla \texttt{Prob2Color} (§\ref{sec:funcionamiento_reconocimiento}): si la probabilidad máxima de la red queda por debajo de 0.5, el sistema fuerza la salida a BLACK aunque alguna clase encendida sea la de mayor probabilidad. En la fase de verde modificado del Video 6, el color modificado cae en una región del espacio interno del clasificador donde ninguna clase es claramente dominante; la probabilidad máxima oscila alrededor de 0.5, por lo que la salida alterna entre BLACK (cuando cae bajo el umbral) y RED (cuando lo supera, porque el color modificado se parece más a rojo que a las otras tres clases en ese punto).
+
+\subsection{Comportamiento del \textit{Tracker} Durante el Test}
+
+\subsubsection{Reglas del \textit{tracker} relevantes para este test}
+
+Recordemos las reglas del \textit{tracker} (§\ref{sec:funcionamiento_tracking}) relevantes para este test:
+
+\begin{itemize}
+    \item Regla de seguridad asimétrica: si el color actual es YELLOW y el último color conocido era RED, se mantiene RED. La regla protege contra transiciones ``hacia atrás'' en la secuencia oficial GREEN$\to$YELLOW$\to$RED, no contra transiciones ``hacia adelante''.
+    \item Histéresis para BLACK: si la salida actual es BLACK pero el color previo era un color encendido (RED/YELLOW/GREEN), se mantiene el color previo durante al menos un \textit{frame} antes de aceptar BLACK.
+\end{itemize}
+
+\subsubsection{Qué hizo efectivamente el \textit{tracker}}
+
+Comparando la salida del recognizer con la salida final del \textit{tracker} sobre el Video 6, se observan dos clases de intervenciones, cuantitativamente muy distintas.
+
+\textbf{Histéresis BLACK$\to$RED (mecanismo dominante).} En la fase de verde modificado el recognizer reporta BLACK en 73 detecciones. El \textit{tracker} amortigua 70 de ellos reportándolos como RED en la salida final, porque el color previo conocido para el mismo \textit{signal\_id} era RED (la fase inmediatamente anterior es el rojo natural). Las 3 BLACK que sobreviven aparecen cuando la histéresis se agota: BLACK sostenido cuenta como confirmación y el \textit{tracker} lo acepta. Este es el efecto cuantitativamente más visible del \textit{tracker} en el test.
+
+\textbf{Activación de la regla asimétrica YELLOW después de RED (tres casos puntuales en total).} El recognizer reporta YELLOW espurio en algunos \textit{frames} aislados de la fase de falla. En el video 5 ocurre una vez (frame 1816, signal\_0); en el video 6, dos veces (frames 1776 y 1856, ambos sobre signal\_0). En las tres ocasiones el \textit{tracker} corrige el resultado a RED por la regla de seguridad asimétrica (YELLOW después de RED se rechaza). Es exactamente el escenario que la regla está diseñada para filtrar.
+
+\subsubsection{El alcance del hallazgo es estadísticamente muy acotado}
+
+La activación de la regla GREEN$\to$YELLOW$\to$RED ocurrió, pero \textbf{con una frecuencia extremadamente baja}: tres detecciones en total (1 en el video 5 y 2 en el video 6), repartidas entre 229 detecciones que el recognizer produjo en las fases de falla de ambos videos. El comportamiento dominante de esa fase, en los dos videos, es la oscilación BLACK/RED amortiguada por la histéresis, no la corrección por la regla asimétrica.
+
+Esto deja la lectura del hallazgo en un estado intermedio:
+
+\begin{itemize}
+    \item \textbf{Por un lado,} el test sí documentó casos concretos donde la regla intercepta un error real del clasificador, no sólo un caso hipotético. Es información que el aislamiento del módulo hizo posible: sin acceso a las salidas crudas del recognizer no habríamos podido ver el YELLOW espurio, porque la salida final del \textit{tracker} lo enmascara.
+
+    \item \textbf{Por otro,} las tres activaciones ocurren sobre \texttt{signal\_0} y son solo tres \textit{frames} sobre los $\sim$165 totales de las fases de falla en los dos videos. Es plausible que sean fenómenos puntuales (transiciones bruscas entre el rojo natural y el verde modificado, fluctuaciones del clasificador en condiciones de iluminación límite) más que un fenómeno representativo del modo de falla general.
+\end{itemize}
+
+\subsubsection{Hipótesis a contrastar}
+
+Lo observado abre dos hipótesis sobre la naturaleza del fenómeno, que el test actual no permite zanjar:
 
 \begin{enumerate}
-    \item Partir de un video de semáforo en verde
-    \item Aplicar modificaciones progresivas de color usando edición de video
-    \item Ejecutar el sistema sobre cada versión
-    \item Registrar cuándo cambia la clasificación
+    \item \textbf{Casos aislados.} Las tres activaciones de la regla son artefactos puntuales: dos asociadas a transiciones bruscas (el \textit{frame} 1776 del video 6, justo al cambio de rojo natural a verde modificado) o a fluctuaciones del clasificador en condiciones límite (\textit{frame} 1816 del video 5, \textit{frame} 1856 del video 6). No son representativas del modo de falla general; el modo de falla típico de ambos videos es BLACK/RED, sin YELLOW espurio.
+
+    \item \textbf{Punta de un fenómeno más amplio.} La frecuencia baja es consecuencia de haber probado una sola configuración crítica sobre un único video. Con configuraciones intermedias del parámetro de tono entre $-100$ y $-110$, o con escenas distintas donde la transición no sea tan brusca, podrían aparecer más \textit{frames} con YELLOW espurio y la regla pasaría a tener un rol cuantitativamente relevante en filtrar la falla.
 \end{enumerate}
 
-\subsection{Implementación}
+Distinguir entre ambas hipótesis es trabajo inmediato y queda enmarcado en el Capítulo~\ref{cap:conclusiones}: probar configuraciones intermedias y repetir el test sobre escenas distintas. El enfoque cambió ligeramente respecto a lo que se había planteado antes (cuando la pregunta era ``¿se activó la regla?''): ahora la pregunta es ``¿los casos observados son representativos o son puntuales?''. Pero las herramientas necesarias para responderlo son las mismas, y todas las extensiones que se habían planteado siguen siendo válidas con este nuevo enfoque.
 
-\textbf{Herramienta:} Adobe Premiere Pro 2021
+\subsubsection{Ventanas temporales y \textit{frames}}
 
-\textbf{Efecto utilizado:} ``Cambiar color'' (Corrección de color)
-
-\textbf{Configuración:}
-\begin{itemize}
-    \item Color objetivo: Verde del semáforo (seleccionado con gotero)
-    \item Tolerancia coincidente: 15-30\%
-    \item Parámetro variable: Tono (hue rotation)
-\end{itemize}
-
-\textbf{Videos generados:}
-
-\begin{table}[H]
-\centering
-\begin{tabular}{|c|c|c|}
-\hline
-\textbf{Video} & \textbf{Tono} & \textbf{Descripción} \\
-\hline
-1 & 0 & Verde original (sin modificación) \\
-2 & -20 & Verde levemente modificado \\
-3 & -65 & Verde-amarillento \\
-4 & -80 & Amarillo-verdoso \\
-5 & -100 & Amarillo \\
-6 & -110 & Ámbar intenso \\
-\hline
-\end{tabular}
-\caption{Videos generados con variaciones de tono}
-\end{table}
-
-\subsection{Resultados}
-
-\textbf{Videos 1-5 (Tono 0 a -100):}
-
-\begin{itemize}
-    \item El sistema clasificó el semáforo como GREEN en el 100\% de los frames de la fase verde
-    \item Ninguna confusión con YELLOW o RED
-    \item El sistema es robusto a estas modificaciones de color
-\end{itemize}
-
-\textbf{Video 6 (Tono -110) - Punto de falla:}
-
-\begin{table}[H]
-\centering
-\begin{tabular}{|l|c|c|l|}
-\hline
-\textbf{Fase} & \textbf{Frames} & \textbf{Clasificación} & \textbf{Observación} \\
-\hline
-Fase 1 & 0-165 & GREEN (100\%) & Clasificación correcta \\
-\hline
-Fase 2 & 166-188 & YELLOW (100\%) & \textbf{Punto de falla} \\
-\hline
-Fase 3 & 189-443 & RED ($\sim$95\%) & Confusión severa \\
-\hline
-Fase 4 & 444-484 & BLACK/RED & Inestabilidad \\
-\hline
-\end{tabular}
-\caption{Distribución de clasificaciones en Video 6}
-\end{table}
+A 30\,fps, una ventana de 1.5\,s del \textit{tracker} (parámetro \texttt{revise\_time\_s}) abarca 45\,\textit{frames}. Las fases del Video 6 son largas en comparación (la más corta, el amarillo natural, son 90\,\textit{frames}, equivalente a 3\,s); la fase de verde modificado son 83\,\textit{frames}. Todas las transiciones ocurren dentro de la ventana de validación del \textit{tracker}, y el \textit{reset} de 1.5\,s no se dispara: el semáforo está visible todo el tiempo.
 
 \subsection{Análisis}
 
-\textbf{Hallazgo principal:} El sistema es \textbf{sorprendentemente robusto} a variaciones de color.
+\textbf{Robustez del clasificador a alteraciones del verde.} El hallazgo más informativo del test es la \textit{magnitud} de alteración que el sistema tolera sin perder la clasificación correcta. Cuatro de las seis configuraciones probadas, incluyendo una con desplazamiento de tono de $-80$ grados acompañado de cambios de luminosidad y saturación, no movieron al recognizer de su clasificación GREEN durante la fase verde del ciclo. Si esa misma escala de alteración se interpretara como un proxy muy crudo de variaciones de iluminación real, el clasificador tolera condiciones moderadamente adversas antes de empezar a fallar.
 
-\textbf{Umbral de falla:}
-\begin{itemize}
-    \item El sistema funciona correctamente hasta Tono -100
-    \item Falla a partir de Tono -110
-    \item El umbral exacto está entre -100 y -110
-\end{itemize}
+\textbf{Caracterización del punto de falla.} El sistema falla a partir del Video 5 (tono $-100$ + luminosidad $+10$ + saturación $+20$), y la falla se intensifica en el Video 6 (tono $-110$). El umbral exacto, en términos del parámetro de tono, está entre $-80$ y $-100$; refinar ese intervalo (probar $-85$, $-90$, $-95$) es una de las extensiones inmediatas mencionadas en el Capítulo~\ref{cap:conclusiones}. La intensidad de la falla varía entre los dos videos del lado fallido del umbral: el Video 5 produce 0 GREEN y mezcla BLACK/RED con un YELLOW espurio aislado; el Video 6 produce 0 GREEN, más BLACK y dos YELLOW espurios.
 
-\textbf{Modo de falla:}
-\begin{itemize}
-    \item La transición es gradual: GREEN → YELLOW → RED
-    \item No hay un salto abrupto, sino una degradación progresiva
-    \item Frame 166 marca la primera detección errónea (YELLOW)
-\end{itemize}
+\textbf{Modo de falla.} En el punto de falla, el recognizer no clasifica el verde modificado como verde; el comportamiento dominante es una oscilación entre BLACK y RED en la fase final del ciclo. BLACK es la salida ``segura'' que el sistema produce cuando \texttt{Prob2Color} no encuentra una clase suficientemente dominante; RED es la clase que más se parece al verde modificado en el espacio interno del clasificador. Adicionalmente, en tres \textit{frames} puntuales repartidos entre los dos videos fallidos (1816 en el Video 5; 1776 y 1856 en el Video 6), el recognizer produce YELLOW; el \textit{tracker} lo corrige a RED por la regla de seguridad. La cantidad de \textit{frames} con YELLOW espurio es lo suficientemente baja como para no permitir afirmar si es un fenómeno representativo del modo de falla o si son artefactos puntuales que con otras configuraciones o escenas se comportarían distinto (ver §6.2.6).
 
 \section{Validación de la Hipótesis}
 
-El test de transición verde→amarillo valida la hipótesis de que el conocimiento interno permite diseñar tests efectivos:
+El test valida la hipótesis de que el conocimiento interno permite diseñar y, sobre todo, \textit{interpretar} tests:
 
 \begin{enumerate}
-    \item \textbf{El conocimiento de las clases de salida} (GREEN, YELLOW) sugirió testear la frontera entre ellas
+    \item El \textbf{conocimiento de las clases de salida del recognizer} (BLACK, RED, YELLOW, GREEN) y de \texttt{Prob2Color} sugirió testear las fronteras entre ellas, y permitió interpretar la fase BLACK/RED como inestabilidad alrededor del umbral 0.5, no como ruido aleatorio.
 
-    \item \textbf{El conocimiento de la arquitectura CNN} sugirió que existiría un límite de decisión
+    \item El \textbf{conocimiento de las reglas del \textit{tracker}} permitió formular la pregunta correcta cuando aparecieron transiciones de color: ¿qué reglas se activaron y cuáles no? Sin ese conocimiento, una alternancia BLACK/RED al final del video sería un comportamiento difícil de interpretar.
 
-    \item \textbf{El conocimiento del proceso de normalización} confirmó que el sistema opera en espacio de color similar al original
+    \item El \textbf{conocimiento de la estructura del video} (ciclo natural más alteración solo sobre el verde) permitió separar lo que el recognizer hizo bien (clasificar correctamente las fases amarillo y rojo no modificadas) de lo que hizo mal (no reconocer el verde modificado).
 
-    \item \textbf{El resultado} encontró el umbral exacto de falla del clasificador
+    \item El \textbf{control sobre el código del módulo} permitió iterar rápidamente entre seis configuraciones distintas y registrar las salidas \textit{frame} a \textit{frame} para análisis posterior.
 \end{enumerate}
 
-Un test de caja negra podría haber probado variaciones aleatorias de color sin encontrar sistemáticamente este umbral.
+Un test de caja negra habría observado el mismo \textit{output} pero le habría costado mucho más explicar por qué BLACK, por qué la transición a RED, y por qué el YELLOW que sí aparece en la salida cruda del recognizer no se propaga a la salida final del \textit{tracker}.
 
 \section{Limitaciones del Test}
 
 \subsection{Adversario Sintético}
 
-El test utiliza un \textbf{adversario sintético}: la modificación de color se realizó digitalmente con un editor de video.
+La modificación de color se realiza digitalmente con un editor de video. No sabemos si la combinación específica de tono $-110$, luminosidad $+10$ y saturación $+20$ corresponde con precisión a algún escenario físico real (un atardecer particular, un tipo de semáforo con cubierta tintada, condiciones de \textit{glare} de un determinado tipo). El test \textit{sugiere} que escenarios físicos parecidos podrían provocar el mismo efecto, pero no lo demuestra.
 
-\textbf{Implicación:} No sabemos si esta modificación de color corresponde a algún escenario físico real (iluminación específica, tipo de semáforo, condiciones atmosféricas).
-
-\textbf{Defensa del enfoque:}
-\begin{itemize}
-    \item El objetivo era encontrar el límite del clasificador, no replicar escenarios físicos
-    \item El test es reproducible y sistemático
-    \item Los hallazgos sobre la robustez del sistema son válidos independientemente de si el escenario es físicamente realizable
-\end{itemize}
+\textbf{Defensa del enfoque.} El objetivo era encontrar el límite del clasificador y observar cómo reacciona el \textit{tracker}, no replicar un escenario físico concreto. El test es reproducible y sistemático, y los hallazgos cualitativos (robustez en un rango amplio, falla a partir de cierto umbral, modo de falla concreto al final del ciclo) son válidos independientemente de si la curva exacta de alteración corresponde a una iluminación real específica.
 
 \subsection{Cobertura Limitada}
 
-El test solo explora la frontera verde→amarillo. Otros límites de decisión (amarillo→rojo, verde→black) no fueron testeados sistemáticamente.
+El test solo explora una dirección de alteración (verde hacia tonos cálidos) y solo modifica el píxel del semáforo. Otras direcciones (verde hacia tonos fríos, alteración del rojo del semáforo, alteración del fondo del cuadro) no fueron testeadas. La regla de seguridad GREEN$\to$YELLOW$\to$RED se activó en tres \textit{frames} puntuales (ver \S6.2.6), pero la cantidad es lo suficientemente baja como para no permitir concluir si su rol en este modo de falla es estructural o si los tres casos son artefactos puntuales; el ejercicio de robustecer ese hallazgo (probar configuraciones intermedias del parámetro de tono, variar la escena del video) queda pendiente.
 
-\section{Justificación del Recorte para Testing}
+\subsection{Una sola escena, una sola configuración crítica}
 
-El test de transición verde→amarillo demuestra el valor del recorte:
+Todos los videos del test se generan a partir del mismo video base (un ciclo de un semáforo concreto bajo condiciones de iluminación específicas). Una conclusión robusta sobre el modo de falla del clasificador requeriría repetir el experimento con videos de distintas escenas (otros semáforos, otros entornos urbanos, otras horas del día) y con configuraciones intermedias del parámetro de tono entre $-100$ y $-110$. Las extensiones inmediatas del Capítulo~\ref{cap:conclusiones} apuntan en esa dirección.
+
+\section{Cómo el Proceso de Aislamiento Inspiró Este Test}
+
+Vale la pena detenerse en el origen de la pregunta de investigación de este test, porque no es una pregunta que se le habría ocurrido a alguien que viniera desde afuera. Surgió como subproducto directo del proceso completo que documenta esta tesis: el intento fallido de recortar Apollo, el análisis estático del código, y la posterior reconstrucción del módulo aislado.
+
+\textbf{El intento de recorte (Apéndice~\ref{apendice:recorte_fallido}) fue la primera fuente de inspiración.} Mientras se intentaba aislar el TLR del resto de Apollo, una parte considerable del esfuerzo se dedicó a entender qué hacía cada componente \textit{conceptualmente}: cuántas etapas tenía el pipeline, qué se le pasaba al recognizer, qué clases devolvía. Justamente en esa fase aparecieron las dos preguntas que terminaron alimentando el test:
+
+\begin{itemize}
+    \item \textit{¿Qué pasa cuando el recognizer ve un color que no encaja claramente en ninguna de sus cuatro clases?} Pregunta inevitable cuando uno lee el código de \texttt{Prob2Color} y ve la regla del umbral 0.5 con \textit{fallback} a BLACK.
+    \item \textit{¿Cuál es el rol exacto del \textit{tracker} cuando el recognizer se equivoca?} Pregunta inevitable cuando uno entiende la regla asimétrica GREEN$\to$YELLOW$\to$RED y se pregunta para qué tipo de error sirve realmente.
+\end{itemize}
+
+Estas dos preguntas \textit{precedieron} al test: existían antes de que el módulo aislado estuviera en condiciones de probarlas. El recorte hizo evidente que el TLR era un sistema con varias decisiones de diseño no triviales esperando ser ejercitadas, pero no permitió ejercitarlas (porque no se logró ejecutarlo). El test del Capítulo~\ref{cap:diseno_tests} es, en buena medida, la concreción experimental de las hipótesis que se acumularon durante esa primera fase fallida.
+
+\textbf{El aislamiento por reconstrucción cerró el ciclo.} Una vez que el módulo aislado estuvo funcional, se pudo:
 
 \begin{enumerate}
-    \item \textbf{Sin el recorte:} Habría sido necesario configurar Apollo completo (Docker, CyberRT, HD-Map) para poder ejecutar este test
+    \item \textbf{Iterar rápido:} cada variante del test (un video nuevo, una configuración nueva de tono/luminosidad/saturación) se procesa con una llamada Python sobre el módulo aislado, sin reconfigurar nada.
 
-    \item \textbf{Con el recorte:} Pudimos ejecutar el test rápidamente, iterar sobre las variaciones de color, y obtener resultados inmediatos
+    \item \textbf{Instrumentar libremente:} las visualizaciones intermedias (\textit{output} del recognizer, \textit{output} del \textit{tracker}, probabilidades por clase, \textit{logs} por etapa) se acceden con \textit{prints} y \textit{breakpoints}. Sobre Apollo, esto requeriría recompilar y redesplegar.
 
-    \item \textbf{Conocimiento interno:} El proceso de reimplementación nos dio el conocimiento necesario para diseñar el test
+    \item \textbf{Interpretar resultados con conocimiento:} las observaciones del test (por qué BLACK, por qué la mayoría del verde modificado va a RED, por qué los pocos YELLOW del recognizer no llegan a la salida final, por qué la falla está concentrada en los \textit{frames} 1776--1858) sólo tienen sentido a la luz del Capítulo~\ref{cap:funcionamiento_tlr} y de las decisiones de aislamiento del Capítulo~\ref{cap:reimplementacion}. Sin ese conocimiento, la tabla de fases sería ruido; con ese conocimiento, es un fenómeno explicable.
 \end{enumerate}
 
-Esto valida la tesis central del trabajo: \textbf{si focalizamos en un subsistema y lo comprendemos profundamente, podemos diseñar tests más efectivos}.
+En síntesis: el recorte fallido sembró las preguntas, el aislamiento por reconstrucción dio las herramientas para responderlas. La línea entre ambos pasos no es accidental: es la misma línea que une el Capítulo~\ref{cap:reimplementacion} con este capítulo.
 
 \section{Resumen}
 
-Este capítulo presentó:
-
 \begin{enumerate}
-    \item El enfoque de testing de caja blanca basado en conocimiento interno
-
-    \item El diseño e implementación del test de transición verde→amarillo
-
-    \item Los resultados: umbral de falla entre Tono -100 y -110
-
-    \item La validación de la hipótesis: el conocimiento interno permite encontrar adversarios
-
-    \item Las limitaciones: el adversario es sintético, no necesariamente físicamente realizable
+    \item El video de entrada contiene un ciclo natural completo del semáforo (verde$\to$amarillo$\to$rojo$\to$verde). Solo se altera el verde del semáforo; las fases amarillo y rojo permanecen sin tocar en todos los videos.
+    \item La perturbación se inyecta \textit{pre-pipeline}: se generan seis videos con configuraciones progresivamente más fuertes en Premiere y se los entrega al módulo aislado tal cual.
+    \item En los videos 1--4, el sistema clasifica correctamente todo el ciclo, incluyendo el verde modificado. El clasificador es robusto a una franja amplia de alteraciones (hasta tono $-80$).
+    \item En los videos 5 y 6 (tonos $-100$ y $-110$), el sistema deja de reconocer el verde modificado al final del ciclo, oscilando entre BLACK y RED. La fase final del cuadro de resultados refleja esa falla; las fases anteriores corresponden mayormente al ciclo natural bien clasificado. La intensidad de la falla aumenta con el tono más negativo.
+    \item BLACK aparece por la regla \texttt{Prob2Color} (probabilidad máxima por debajo de 0.5 fuerza BLACK). El recognizer también reporta YELLOW espurio tres veces en total (frame 1816 del video 5; frames 1776 y 1856 del video 6, los tres sobre \texttt{signal\_0}), y el \textit{tracker} los corrige a RED por la regla de seguridad asimétrica GREEN$\to$YELLOW$\to$RED. La cantidad de esos casos es lo suficientemente baja como para que el hallazgo no sea concluyente: corroborarlo requiere explorar configuraciones intermedias del parámetro de tono entre $-80$ y $-100$ y repetir el test sobre escenas distintas.
+    \item El test valida la hipótesis del trabajo: \textit{interpretar} este resultado requiere el conocimiento interno que dio el proceso de aislamiento; sin él, la tabla de fases sería un comportamiento ruidoso, no un fenómeno explicable.
 \end{enumerate}

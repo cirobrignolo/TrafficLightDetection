@@ -3,7 +3,7 @@ import os
 import math
 
 # Configuración para el video de flecha roja
-video_path = 'input/filtro_completo.mp4'  # Ruta relativa al video
+video_path = 'input/Verde 6.mp4'  # Ruta relativa al video
 output_dir = 'input_frames/'  # Guardar en esta misma carpeta (reemplazará los frames existentes)
 
 print("🎥 AUTO-EXTRACCIÓN DE FRAMES PARA VIDEO DOBLE CHICO")
@@ -27,7 +27,7 @@ print(f"   Duración: {duration:.2f}s")
 
 # CONFIGURACIÓN PARA PRUEBAS: Extraer 1 de cada 5 frames (reduce cantidad para testing)
 # Para producción: usar frame_interval = 1 (todos los frames)
-frame_interval = 4
+frame_interval = 1
 
 print(f"📸 Guardando 1 frame cada {frame_interval} frames (modo pruebas)")
 print(f"📈 Frames estimados: ~{total_frames // frame_interval}")

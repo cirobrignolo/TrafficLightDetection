@@ -1,125 +1,133 @@
 \chapter{Resultados}
 \label{cap:resultados}
 
-Este capítulo presenta los resultados del trabajo: tanto los hallazgos técnicos sobre el sistema Apollo como las lecciones metodológicas aprendidas durante el proceso.
+Este capítulo presenta los resultados del trabajo de manera consolidada: qué aprendimos del clasificador del módulo, qué aprendimos del módulo TLR de Apollo como sistema, y qué aprendimos del proceso metodológico. La idea no es repetir tablas o cifras ya presentadas en capítulos anteriores, sino sintetizar las conclusiones que se desprenden de juntarlas.
 
-\section{Resultados del Test de Transición Verde → Amarillo}
+Los detalles cuantitativos del test viven en el Capítulo~\ref{cap:diseno_tests}; las decisiones de diseño extraídas del código fuente viven en los Capítulos~\ref{cap:analisis_apollo}--\ref{cap:funcionamiento_tlr}; las métricas del intento fallido de recortar Apollo viven en el Apéndice~\ref{apendice:recorte_fallido}. Acá se reúne, en términos cualitativos, qué significan en conjunto.
 
-\subsection{Robustez del Sistema}
+\section{Lo Aprendido sobre el Clasificador del Módulo TLR}
 
-El hallazgo principal del test es la \textbf{robustez inesperada} del clasificador de colores:
+\subsection{Robustez Mayor a la Esperada}
 
-\begin{table}[H]
-\centering
-\begin{tabular}{|c|c|c|}
-\hline
-\textbf{Tono} & \textbf{Clasificación} & \textbf{Resultado} \\
-\hline
-0 & 100\% GREEN & Correcto \\
--20 & 100\% GREEN & Correcto \\
--65 & 100\% GREEN & Correcto \\
--80 & 100\% GREEN & Correcto \\
--100 & 100\% GREEN & Correcto \\
--110 & GREEN→YELLOW→RED & \textbf{Falla} \\
-\hline
-\end{tabular}
-\caption{Resumen de resultados por video}
-\end{table}
+El primer hallazgo del test (Capítulo~\ref{cap:diseno_tests}) fue que el clasificador del módulo tolera alteraciones del verde más amplias de lo que el sentido común sugería. Cuatro de las seis configuraciones probadas ---incluyendo una con desplazamiento de tono de $-80$ grados combinado con cambios de luminosidad y saturación--- fueron clasificadas como GREEN en el 100\,\% de los \textit{frames} de la fase verde del semáforo, a pesar de que visualmente el verde en esos videos ya tenía una apariencia amarillenta clara para un observador humano. Si esa escala de alteración se interpretara como un proxy crudo de variaciones de iluminación real, el clasificador tolera condiciones moderadamente adversas antes de fallar.
 
-\textbf{Interpretación:} El sistema tolera modificaciones significativas de color (hasta Tono -100) sin perder la clasificación correcta.
+\subsection{Modo de Falla en el Punto Crítico}
 
-\subsection{Caracterización del Punto de Falla}
+El sistema falla a partir de la configuración del Video 5 (tono $-100$ + luminosidad $+10$ + saturación $+20$) y la falla se intensifica en el Video 6 (tono $-110$). En ambos videos, las fases del ciclo natural del semáforo que no fueron modificadas (amarillo y rojo) se clasifican correctamente, pero cuando el ciclo vuelve a verde ---y ese verde está modificado--- el recognizer no lo reconoce: la salida oscila entre BLACK y RED, sin reportar GREEN, en la fase final del video. La diferencia entre los dos videos del lado fallido es cuantitativa, no estructural: el Video 5 produce más RED como salida del recognizer y el Video 6 produce más BLACK, pero ninguno de los dos produce GREEN.
 
-El punto de falla (Tono -110) muestra una degradación gradual:
+\textbf{Por qué BLACK aparece}, lo entiende el lector después del Capítulo~\ref{cap:funcionamiento_tlr}: la regla \texttt{Prob2Color} (umbral 0.5) fuerza la salida a BLACK cuando la probabilidad máxima del recognizer cae por debajo del umbral. En la fase final de los videos fallidos, el verde modificado cae en una región del espacio de color donde el clasificador no tiene una clase claramente dominante, así que su salida cruza el umbral hacia abajo y hacia arriba alternadamente.
 
-\begin{enumerate}
-    \item Frame 166: Primera clasificación errónea (YELLOW)
-    \item Frame 189: Primera clasificación como RED
-    \item Frames 189-443: Clasificación predominante RED
-\end{enumerate}
+\textbf{Por qué RED en lugar de YELLOW o GREEN}, la salida cruda del recognizer (registrada en el \textit{output} del módulo, ver §\ref{sec:funcionamiento_tracking}) lo aclara: en la fase de verde modificado, la clase de mayor probabilidad cuando la salida no es BLACK es predominantemente RED. Esto sugiere que el ámbar del verde modificado se proyecta, en el espacio interno del clasificador, más cerca del centroide del rojo que del verde o del amarillo. Es información concreta sobre cómo aprendió el modelo a ubicar colores.
 
-Esto sugiere que los límites de decisión del clasificador son \textbf{suaves}, no abruptos.
+\textbf{El YELLOW espurio aparece pero es minoritario.} En tres \textit{frames} puntuales repartidos entre los dos videos fallidos ---el \textit{frame} 1816 del Video 5, y los \textit{frames} 1776 y 1856 del Video 6, los tres sobre \texttt{signal\_0}--- el recognizer reporta YELLOW. En las tres ocasiones el \textit{tracker} corrige el resultado a RED por la regla de seguridad asimétrica. La cantidad de \textit{frames} con YELLOW es lo suficientemente baja como para no permitir afirmar si representa el comportamiento típico del clasificador en condiciones de iluminación cálida o si son artefactos puntuales (transiciones bruscas, fluctuaciones del clasificador en condiciones límite); la discusión sobre este punto está en §\ref{subsec:respuesta_parcial_tracker}.
 
-\section{Hallazgos sobre el Sistema Apollo}
+\subsubsection{Factibilidad del Escenario en Condiciones Reales}
 
-El proceso de análisis y reimplementación reveló información valiosa sobre el diseño de Apollo:
-
-\subsection{Decisiones de Diseño Documentadas}
-
-\begin{table}[H]
-\centering
-\begin{tabular}{|l|p{8cm}|}
-\hline
-\textbf{Aspecto} & \textbf{Hallazgo} \\
-\hline
-Secuencia de colores & GREEN→YELLOW→RED (diseño para semáforos norteamericanos/europeos) \\
-\hline
-Blink detection & Solo en verde (indica próximo cambio a amarillo) \\
-\hline
-Ponderación húngaro & 70\% distancia, 30\% confianza (prioriza coherencia espacial) \\
-\hline
-Tracking & Basado en Signal ID del HD-Map, no en posición en píxeles \\
-\hline
-\end{tabular}
-\caption{Decisiones de diseño descubiertas}
-\end{table}
-
-\subsection{Funcionalidad No Implementada}
-
-El semantic\_id está diseñado en el código pero nunca se usa:
+Si bien la alteración del Video 6 se generó sintéticamente, vale la pena especular sobre si una condición de iluminación real podría producir un efecto análogo. El verde modificado del Video 6 ---ámbar saturado con luminosidad elevada--- no es una invención arbitraria: visualmente se parece bastante a lo que un semáforo verde puede aparentar bajo ciertas condiciones físicas concretas:
 
 \begin{itemize}
-    \item Siempre tiene valor 0 (hardcodeado)
-    \item El código de voting entre semáforos del mismo cruce existe pero nunca se ejecuta
-    \item Consecuencia: No hay corrección por consistencia entre semáforos de la misma intersección
+    \item \textbf{Luz solar directa al amanecer o atardecer:} el sol bajo proyecta una iluminación cálida sobre la cara del semáforo. Si la cubierta protectora de la luz verde refleja parcialmente esa luz cálida, el resultado para la cámara puede ser cromáticamente parecido al Video 6.
+    \item \textbf{Reflejos de superficies cercanas:} carteles iluminados, fachadas anaranjadas, o luces de freno de vehículos cercanos pueden sumar componentes cálidas a la apariencia del semáforo.
+    \item \textbf{Cámaras con balance de blancos desplazado:} si el sistema de cámaras del vehículo compensa una escena globalmente fría desplazando el balance hacia cálidos, las luces verdes podrían registrarse con un tono distinto al esperado por el modelo.
+    \item \textbf{Semáforos con LEDs degradados o cubiertas amarillentas:} unidades viejas con cubiertas plásticas que han envejecido pueden tener verdes notablemente más cálidos de lo normal.
 \end{itemize}
 
-\section{Validación de la Metodología}
+No es difícil imaginar combinaciones de estas condiciones que se acerquen al punto que el test identificó como crítico. El test no demuestra que el escenario sea físicamente realizable con un par específico de condiciones, pero el gradiente de los seis videos sugiere que la frontera entre ``robusto'' y ``falla'' es lo suficientemente próxima a alteraciones cromáticamente plausibles como para que el escenario no se pueda descartar a priori.
 
-\subsection{Reimplementación vs Recorte}
+\subsubsection{Implicancias Upstream para el Sistema Completo}
 
-El trabajo intentó dos aproximaciones:
-
-\begin{table}[H]
-\centering
-\begin{tabular}{|l|p{5cm}|p{5cm}|}
-\hline
-\textbf{Aspecto} & \textbf{Recorte de Apollo} & \textbf{Reimplementación} \\
-\hline
-Resultado & No funcional & Funcional y equivalente \\
-\hline
-Complejidad & Muy alta (CyberRT, Docker) & Baja (solo Python) \\
-\hline
-Comprensión & Limitada & Profunda (forzada por el proceso) \\
-\hline
-Testabilidad & Imposible (no se logró ejecutar) & Simple \\
-\hline
-\end{tabular}
-\caption{Comparación de aproximaciones}
-\end{table}
-
-\textbf{Conclusión:} Para sistemas legacy complejos, reimplementar un subsistema puede ser más viable que intentar recortarlo.
-
-\subsection{Valor del Conocimiento Interno}
-
-El test de transición verde→amarillo no habría sido posible sin:
+Más importante todavía es preguntarse \textbf{qué le pasaría al resto del vehículo} si el TLR efectivamente reportara este modo de falla durante operación real. El TLR es un componente \textit{upstream} del módulo de planificación de Apollo: lo que el TLR diga sobre el estado del semáforo entra como evidencia en las decisiones de detenerse, avanzar o ceder paso. Los tres escenarios posibles del modo de falla, en orden de gravedad creciente desde el punto de vista de la planificación:
 
 \begin{enumerate}
-    \item Conocimiento de la arquitectura del classificador (clases de salida)
-    \item Conocimiento de la normalización (cómo procesa los colores)
-    \item Control sobre el código (para ejecutar rápidamente múltiples variaciones)
+    \item \textbf{El TLR reporta BLACK} (apagado/desconocido) cuando el semáforo real está en verde. La planificación recibe una entrada ambigua. Dependiendo de cómo Apollo conjugue esa señal con el resto del contexto (presencia de la línea de detención, ausencia de vehículos cruzados, comportamiento de otros agentes), puede degradar a un comportamiento conservador: detener el vehículo o reducir velocidad. Es una falla incómoda pero relativamente segura.
+
+    \item \textbf{El TLR reporta RED} cuando el semáforo real está en verde. Acá la planificación tiene información explícita y errónea: el semáforo está en rojo. El vehículo se detiene cuando físicamente podía avanzar. Es una falla \textit{molesta} (interrumpe el flujo del tráfico, expone al vehículo a colisiones por detrás), pero sigue siendo del lado conservador en términos de seguridad inmediata.
+
+    \item \textbf{El TLR reporta YELLOW (en algún \textit{frame} puntual) y el \textit{tracker} no filtra.} Este caso no se observó en la salida final del test: el recognizer sí produjo YELLOW en tres \textit{frames} (1816 del Video 5; 1776 y 1856 del Video 6), pero el \textit{tracker} corrigió los tres a RED por la regla de seguridad, así que el YELLOW nunca llegó al downstream. Si por algún motivo la regla del \textit{tracker} fallara o el contexto previo no fuera RED, este escenario sí podría manifestarse: la interpretación de un amarillo intermitente por parte de la planificación es ambigua y depende del contexto, y el peor caso sería que el vehículo intente acelerar para ``pasar el amarillo''.
 \end{enumerate}
 
-Esto valida la hipótesis central: \textbf{el conocimiento interno permite diseñar tests más efectivos}.
+Notablemente, ningún escenario observado en el test produce el peor caso posible de seguridad (que el TLR reporte GREEN cuando el semáforo real está en rojo). La asimetría de la regla GREEN$\to$YELLOW$\to$RED, en conjunto con la naturaleza del modo de falla observado (BLACK/RED dominante, YELLOW espurio neutralizado por el \textit{tracker}, no GREEN espurio), sugieren que el sistema falla del lado conservador. Esto no quiere decir que el modo de falla sea aceptable ---un vehículo autónomo que se detiene en falso en cada atardecer cálido sería un producto inviable--- pero sí explica por qué el diseño del TLR resiste el adversario que el test logró construir.
 
-\section{Resumen de Resultados}
+\subsection{Interacción con el \textit{tracker}: Respuesta Parcial}
+\label{subsec:respuesta_parcial_tracker}
+
+La parte interesante del test es lo que el \textit{tracker} hizo durante la fase de falla. Comparando la salida cruda del recognizer (registrada \textit{frame} a \textit{frame}) con la salida final del \textit{tracker}, se observan dos clases de intervenciones cuantitativamente muy distintas.
+
+\textbf{Histéresis BLACK$\to$RED, mecanismo dominante.} Cada vez que el recognizer reporta BLACK durante la fase de verde modificado, el \textit{tracker} lo reemplaza por RED en la salida final, porque el color previo conocido para ese \textit{signal\_id} era RED. Esto explica por qué la salida final no muestra los BLACKs que el recognizer sí está produciendo: el \textit{tracker} los está amortiguando uno a uno. Es el efecto más visible y consistente del \textit{tracker} en este test.
+
+\textbf{Corrección YELLOW$\to$RED, mecanismo minoritario.} En tres \textit{frames} puntuales repartidos entre los dos videos fallidos ---el \textit{frame} 1816 del Video 5, y los \textit{frames} 1776 (primer \textit{frame} de la fase, justo en la transición desde el rojo natural) y 1856 (cerca del final de la fase) del Video 6, los tres sobre \texttt{signal\_0}--- el recognizer reporta YELLOW. En las tres ocasiones el \textit{tracker} corrige el resultado a RED por la regla de seguridad asimétrica (YELLOW después de RED se rechaza). Este es el escenario que la regla está diseñada para filtrar, y los datos muestran que efectivamente actúa cuando aparece la oportunidad.
+
+\subsubsection{El hallazgo es informativo pero estadísticamente débil}
+
+El segundo mecanismo activa la pregunta que se había dejado abierta en versiones anteriores de este análisis: ¿la regla GREEN$\to$YELLOW$\to$RED actuó en este test? La respuesta es \textbf{sí, pero con una frecuencia muy baja}: tres detecciones en total (una en el Video 5, dos en el Video 6) sobre las $\sim$229 detecciones que el recognizer produjo en las fases de falla de los dos videos. El comportamiento dominante de esas fases es BLACK/RED, no YELLOW corregido a RED.
+
+Esto deja la lectura en un estado intermedio, no concluyente:
+
+\begin{itemize}
+    \item \textbf{Por un lado,} el test sí documentó un caso concreto donde la regla intercepta un error real del clasificador, no sólo un caso hipotético. Es información que el aislamiento del módulo hizo posible (sin acceso a las salidas crudas del recognizer no habríamos podido ver el YELLOW espurio).
+
+    \item \textbf{Por otro,} el peso estadístico del fenómeno es marginal frente al modo de falla principal (BLACK/RED). Tratar la activación observada como evidencia de un rol estructural de la regla en este escenario sería sobreinterpretar la evidencia que produjo esta corrida del test.
+\end{itemize}
+
+\subsubsection{Hipótesis a contrastar y extensiones}
+
+Lo observado abre dos hipótesis sobre la naturaleza del fenómeno, que el test actual no permite zanjar:
 
 \begin{enumerate}
-    \item \textbf{Test de transición:} Umbral de falla entre Tono -100 y -110, sistema robusto a variaciones moderadas
+    \item \textbf{Caso aislado.} El YELLOW espurio es un artefacto de los bordes de la fase de verde modificado (transiciones bruscas, primer \textit{frame} del nuevo estado), y no se reproduce de manera sistemática dentro del cuerpo de la fase. La regla actúa pero su rol cuantitativo es marginal.
 
-    \item \textbf{Decisiones de diseño:} Documentación de aspectos no documentados de Apollo
-
-    \item \textbf{Metodología:} Validación de que reimplementación + caja blanca permite encontrar adversarios
-
-    \item \textbf{Limitación:} El adversario encontrado es sintético, no necesariamente físicamente realizable
+    \item \textbf{Punta del iceberg.} La frecuencia baja es consecuencia de haber probado solo dos configuraciones en el lado fallido del umbral, sobre un único video base. Con configuraciones intermedias del parámetro de tono (entre $-80$ y $-100$) o con escenas distintas, aparecerían más \textit{frames} con YELLOW espurio, y la regla pasaría a tener un rol cuantitativamente relevante en filtrar la falla.
 \end{enumerate}
+
+Distinguir entre ambas hipótesis es trabajo inmediato y queda enmarcado en el Capítulo~\ref{cap:conclusiones}: probar configuraciones intermedias del parámetro de tono y repetir el test con escenas distintas, para evaluar si el fenómeno depende del contenido específico de la imagen o es genérico de la alteración cromática. El enfoque cambia ligeramente respecto a lo que se había planteado antes (cuando la pregunta era ``¿se activó la regla?''): ahora la pregunta es ``¿los casos observados son representativos o anecdóticos?''. Pero las herramientas necesarias para responderlo son las mismas, y todas las extensiones que se habían planteado siguen siendo válidas con este nuevo enfoque.
+
+\section{Lo Aprendido sobre el Módulo TLR de Apollo}
+
+\subsection{Decisiones de Diseño Extraídas del Código}
+
+El proceso de análisis y aislamiento (Capítulos~\ref{cap:analisis_apollo}--\ref{cap:reimplementacion}) reconstruyó decisiones de diseño que no aparecen en la documentación oficial. Las más significativas:
+
+\begin{itemize}
+    \item \textbf{Ponderación 70/30 del algoritmo húngaro} entre proximidad espacial y confianza de detección: Apollo confía más en la geometría del HD-Map que en el \textit{score} de la red. Esto explica por qué detecciones cercanas con \textit{score} moderado pueden ganarle a detecciones lejanas con \textit{score} alto.
+
+    \item \textbf{Ventana temporal de 1.5\,s en el \textit{tracker}, con histéresis y \textit{reset}.} El sistema valida transiciones dentro de esa ventana y resetea el historial cuando se pierde de vista al semáforo por más tiempo, lo que le permite recuperarse rápido de oclusiones largas sin perder reactividad en operación normal.
+
+    \item \textbf{\textit{Blink detection} restringida al verde, con umbral de 0.55\,s.} Apollo solo marca \textit{blink} cuando el patrón ocurre sobre verde (típicamente, flechas verdes intermitentes que habilitan giros). Rojo y amarillo no producen \textit{blink flag}.
+
+    \item \textbf{Asimetría de la regla GREEN$\to$YELLOW$\to$RED.} La regla en sí está documentada \cite{apollo_tlr_docs}, pero lo que el análisis aportó es el conjunto de detalles que la rodean en la implementación: en qué archivo vive, cómo se conjuga con la ventana temporal, qué pasa cuando se combina con BLACK. El test del Capítulo~\ref{cap:diseno_tests} le da una caracterización empírica a su alcance: cuál clase de fallas filtra y cuál no.
+\end{itemize}
+
+\subsection{Funcionalidad Diseñada pero No Efectiva}
+
+El \texttt{semantic\_id} es el caso más llamativo. El código tiene infraestructura para agrupar semáforos del mismo cruce y aplicarles \textit{voting} ---es decir, corregir clasificaciones individuales a partir de la mayoría del grupo---, pero el \texttt{semantic\_id} está hardcodeado a 0 en \texttt{traffic\_light\_region\_proposal\_component.cc:335}, lo que reduce el \textit{voting} a una operación trivial sobre grupos de un solo elemento. La consecuencia práctica: no hay corrección por consistencia entre semáforos del mismo cruce.
+
+Detectar esta brecha entre diseño e implementación habría sido difícil para alguien que solo usa Apollo como caja negra. El aislamiento por reconstrucción la hizo evidente porque obligó a recorrer línea por línea las cuatro carpetas del TLR durante el análisis.
+
+\section{Lo Aprendido sobre la Metodología}
+
+\subsection{Aislamiento por Reconstrucción vs.\ Recorte}
+
+Las dos aproximaciones que se intentaron tuvieron resultados muy distintos. El detalle cuantitativo del intento de recorte está en el Apéndice~\ref{apendice:recorte_fallido}; en términos cualitativos:
+
+\begin{itemize}
+    \item Recortar el código original implicaba arrastrar más de 169\,000 líneas de infraestructura no funcional para que el TLR ejecutara, levantar CyberRT, dominar Bazel y mantener un \textit{stack} de GPU específico. El \textit{setup} estimado superaba uno o dos meses, sin garantías de cerrar.
+    \item Aislar por reconstrucción produjo, sobre la base del análisis del código original, un módulo equivalente de $\sim$1\,900 líneas Python con dos dependencias (PyTorch, NumPy), ejecutable en minutos, modificable en tiempo real, instrumentable con \textit{prints} y \textit{breakpoints}.
+\end{itemize}
+
+La lección no es que reconstruir sea \textit{siempre} mejor que recortar. Es que, cuando el sistema legado tiene un acoplamiento profundo con su infraestructura (mensajería propia, \textit{build system} pesado, dependencias de hardware específicas), recortar puede no ser realmente más barato que reconstruir, aunque parezca el camino más corto.
+
+\subsection{Valor del Conocimiento Interno para Testing}
+
+El test del Capítulo~\ref{cap:diseno_tests} habría sido imposible de \textit{interpretar} sin el conocimiento interno acumulado durante el aislamiento. Un observador externo, viendo la tabla de fases del Video 6, vería un comportamiento difícil de explicar: el último tramo del ciclo (cuando el semáforo vuelve a verde) reporta RED y BLACK en la salida final, sin GREEN; y la salida cruda del recognizer agrega un par de YELLOW puntuales que no aparecen en el resultado del sistema. Con el conocimiento del recognizer (cuatro clases de salida), de \texttt{Prob2Color} (umbral 0.5 que fuerza BLACK por debajo), y del \textit{tracker} (regla asimétrica, histéresis), la misma tabla cuenta una historia coherente: el clasificador no reconoce el verde modificado y oscila entre BLACK y RED, el \textit{tracker} amortigua los BLACK por histéresis y corrige los pocos YELLOW espurios por la regla de seguridad.
+
+Esto valida la hipótesis central del trabajo: para sistemas de \textit{machine learning} sin especificación formal, el testing efectivo necesita conocimiento interno; el conocimiento interno no se obtiene sin acceso al código; el acceso al código sin la posibilidad de ejecutarlo y modificarlo no alcanza. El aislamiento es lo que cierra esa cadena.
+
+\subsection{Limitación Metodológica: Equivalencia por Construcción}
+
+La equivalencia funcional entre el módulo aislado y el TLR de Apollo no se validó empíricamente: no se ejecutó Apollo sobre las mismas entradas para comparar salidas, porque el costo de hacerlo es desproporcionado al objetivo. La equivalencia se afirma bajo los doce supuestos explícitos enumerados en la sección~\ref{sec:supuestos_equivalencia} del Capítulo~\ref{cap:reimplementacion}. Los hallazgos del test deben leerse condicionalmente: ``si esos supuestos se cumplen, entonces el comportamiento observado en el módulo aislado es también el de Apollo''.
+
+Es una limitación honesta del enfoque, no un defecto de ejecución. Un trabajo futuro que pueda invertir el costo de configurar Apollo podría hacer la comparación A/B y reducir el espacio de supuestos.
+
+\section{Síntesis}
+
+En conjunto, los tres planos de aprendizajes (clasificador, TLR de Apollo, metodología) refuerzan la idea con la que se abrió el trabajo. La efectividad del testing sobre un sistema de \textit{machine learning} embebido en una infraestructura compleja no depende solamente del esfuerzo invertido en correrlo: depende, sobre todo, de poder verlo desde adentro. Aislar el módulo fue lo que permitió diseñar un test específico, ejecutarlo, observar lo que pasaba en cada etapa, y construir una explicación coherente sobre el clasificador (que tolera alteraciones amplias del verde y falla puntualmente con una combinación específica de tono, luminosidad y saturación), sobre el \textit{tracker} (cuya regla asimétrica se activó en algunos \textit{frames} aislados pero con una frecuencia lo suficientemente baja como para que el rol estructural de esa activación tenga que ser corroborado en una corrida más densa), y sobre el diseño del TLR de Apollo (que decidió, hace tiempo, qué clase de fallas quería filtrar y bajo qué reglas).
