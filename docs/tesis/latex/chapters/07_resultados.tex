@@ -21,6 +21,39 @@ El sistema falla a partir de la configuración del Video 5 (tono $-100$ + lumino
 
 \textbf{El YELLOW espurio aparece pero es minoritario.} En tres \textit{frames} puntuales repartidos entre los dos videos fallidos ---el \textit{frame} 1816 del Video 5, y los \textit{frames} 1776 y 1856 del Video 6, los tres sobre \texttt{signal\_0}--- el recognizer reporta YELLOW. En las tres ocasiones el \textit{tracker} corrige el resultado a RED por la regla de seguridad asimétrica. La cantidad de \textit{frames} con YELLOW es lo suficientemente baja como para no permitir afirmar si representa el comportamiento típico del clasificador en condiciones de iluminación cálida o si son artefactos puntuales (transiciones bruscas, fluctuaciones del clasificador en condiciones límite); la discusión sobre este punto está en §\ref{subsec:respuesta_parcial_tracker}.
 
+La Figura~\ref{fig:yellow_espurio} muestra uno de estos tres \textit{frames} (Video~6, \textit{frame} 1776, sobre \texttt{signal\_0}). El semáforo físico está en su fase de verde modificado ---el color esperado es GREEN--- pero el recognizer le asigna YELLOW. El \textit{tracker} corrige a RED por la regla asimétrica (YELLOW después de RED se rechaza). Es exactamente el escenario que la regla está diseñada para filtrar.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.7\textwidth]{yellow_espurio_v6_f1776.jpg}
+    \caption[YELLOW espurio en Video~6, frame 1776.]{YELLOW espurio en el Video~6, \textit{frame} 1776, sobre \texttt{signal\_0}. El semáforo está en su fase de verde modificado (ámbar), pero el recognizer le asigna YELLOW; el \textit{tracker} lo corrige a RED por la regla asimétrica GREEN$\to$YELLOW$\to$RED. Es uno de los tres únicos \textit{frames} (de las 229 detecciones combinadas de las fases de falla en los Videos~5 y~6) donde se observa este fenómeno.}
+    \label{fig:yellow_espurio}
+\end{figure}
+
+La Tabla~\ref{tab:csv_yellow_espurio} extrae las filas de los CSVs (\texttt{2\_recognition\_results.csv} y \texttt{3\_final\_results.csv}) en torno al \textit{frame} 1776 para que se pueda leer directamente la transición. Hasta el \textit{frame} 1775 el sistema venía estable en RED sobre \texttt{signal\_0}; en el 1776, primer \textit{frame} de la fase de verde modificado, el recognizer salta a YELLOW (con confianza alta del detector: \texttt{det\_vert} $= 0.97$), pero el \textit{tracker} lo rechaza. En los \textit{frames} 1777 y 1778 el recognizer ya pasa a BLACK ---el verde modificado dejó de ser una clase dominante para la red--- y el \textit{tracker} sigue sosteniendo RED por histéresis. Vale notar también que \texttt{signal\_1} (semáforo secundario) recién empieza a detectarse en el \textit{frame} 1776 y se comporta de forma estable en RED.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{|c|c|c|c|c|c|}
+\hline
+\textbf{Frame} & \textbf{signal\_id} & \texttt{det\_vert} & \texttt{pred\_color} & \texttt{final\_color} & \texttt{tracker\_modified} \\
+\hline
+1774 & signal\_0 & 0.98 & red    & red & False \\
+1775 & signal\_0 & 0.99 & red    & red & False \\
+\hline
+\textbf{1776} & \textbf{signal\_0} & \textbf{0.97} & \textbf{yellow} & \textbf{red} & \textbf{True} \\
+1776 & signal\_1 & 0.60 & red    & red & False \\
+\hline
+1777 & signal\_0 & 0.96 & black  & red & True \\
+1777 & signal\_1 & 0.59 & red    & red & False \\
+1778 & signal\_0 & 0.96 & black  & red & True \\
+\hline
+\end{tabular}
+\caption{Fragmento de los CSVs de salida del Video~6 en torno al YELLOW espurio del \textit{frame} 1776 sobre \texttt{signal\_0}. La columna \texttt{det\_vert} es la probabilidad del detector para la clase ``vertical'' (de \texttt{1\_detection\_results.csv}), e indica que la red de detección estaba confiada de que era un semáforo; \texttt{pred\_color} es la salida del recognizer, \texttt{final\_color} la salida del \textit{tracker}. La fila resaltada es la activación de la regla asimétrica GREEN$\to$YELLOW$\to$RED.}
+\label{tab:csv_yellow_espurio}
+\end{table}
+
 \subsubsection{Factibilidad del Escenario en Condiciones Reales}
 
 Si bien la alteración del Video 6 se generó sintéticamente, vale la pena especular sobre si una condición de iluminación real podría producir un efecto análogo. El verde modificado del Video 6 ---ámbar saturado con luminosidad elevada--- no es una invención arbitraria: visualmente se parece bastante a lo que un semáforo verde puede aparentar bajo ciertas condiciones físicas concretas:
@@ -54,6 +87,51 @@ Notablemente, ningún escenario observado en el test produce el peor caso posibl
 La parte interesante del test es lo que el \textit{tracker} hizo durante la fase de falla. Comparando la salida cruda del recognizer (registrada \textit{frame} a \textit{frame}) con la salida final del \textit{tracker}, se observan dos clases de intervenciones cuantitativamente muy distintas.
 
 \textbf{Histéresis BLACK$\to$RED, mecanismo dominante.} Cada vez que el recognizer reporta BLACK durante la fase de verde modificado, el \textit{tracker} lo reemplaza por RED en la salida final, porque el color previo conocido para ese \textit{signal\_id} era RED. Esto explica por qué la salida final no muestra los BLACKs que el recognizer sí está produciendo: el \textit{tracker} los está amortiguando uno a uno. Es el efecto más visible y consistente del \textit{tracker} en este test.
+
+La Figura~\ref{fig:histeresis_black_red} ilustra este mecanismo sobre un \textit{frame} concreto del Video~6: a la izquierda, la salida cruda del recognizer (BLACK, porque la probabilidad máxima cae por debajo del umbral de \texttt{Prob2Color}); a la derecha, la salida final del \textit{tracker} (RED, sostenido a partir del último color conocido). El contraste hace visible una de las 134 correcciones combinadas que el \textit{tracker} aplicó en las fases de falla de los Videos~5 y~6.
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{histeresis_v6_recognizer.jpg}
+        \caption[Recognizer: BLACK.]{Salida cruda del recognizer: BLACK. La probabilidad máxima de la red queda por debajo de 0.5 y \texttt{Prob2Color} fuerza el color a apagado.}
+        \label{fig:hist_rec}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{histeresis_v6_final.jpg}
+        \caption[Tracker: RED (histéresis).]{Salida final del \textit{tracker}: RED. La histéresis para BLACK mantiene el color encendido del historial (RED de la fase rojo natural inmediatamente anterior).}
+        \label{fig:hist_final}
+    \end{subfigure}
+    \caption[Histéresis BLACK$\to$RED del \textit{tracker} (Video~6).]{Histéresis BLACK$\to$RED del \textit{tracker} sobre un \textit{frame} del Video~6 en la fase de verde modificado. Es el mecanismo dominante de intervención del \textit{tracker} en el test: amortigua los BLACKs aislados del recognizer sosteniendo el último color encendido del historial. En total, 134 correcciones de este tipo se observan en las fases de falla combinadas de los Videos~5 y~6.}
+    \label{fig:histeresis_black_red}
+\end{figure}
+
+La Tabla~\ref{tab:csv_histeresis} muestra una ventana del CSV del Video~6 (\textit{frames} 1823--1829, sobre \texttt{signal\_0}) que cubre los tres regímenes del mecanismo: corrección activa, agotamiento de la histéresis y reinicio. En 1823--1824 el \textit{tracker} corrige BLACK a RED como hace en la mayor parte de la fase. En 1825--1827, tres BLACK consecutivos del recognizer agotan la histéresis y el \textit{tracker} acepta BLACK como salida final (estos son los tres únicos BLACK que sobreviven en todo el Video~6). En el \textit{frame} 1828, el recognizer vuelve a reportar RED espontáneamente y el \textit{tracker} dispara la marca \texttt{(BLINK)} ---una de las cuatro únicas activaciones de \textit{blink status} en este video---, interpretando el patrón ``encendido $\to$ apagado prolongado $\to$ encendido'' como un parpadeo. En el \textit{frame} 1829 la oscilación BLACK/RED del recognizer reanuda y la histéresis vuelve a operar.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{|c|c|c|c|c|c|}
+\hline
+\textbf{Frame} & \textbf{signal\_id} & \texttt{pred\_color} & \texttt{final\_color} & \texttt{blink\_status} & \texttt{tracker\_modified} \\
+\hline
+1823 & signal\_0 & black & red   &        & True  \\
+1824 & signal\_0 & black & red   &        & True  \\
+\hline
+1825 & signal\_0 & black & \textbf{black} &        & False \\
+1826 & signal\_0 & black & \textbf{black} &        & False \\
+1827 & signal\_0 & black & \textbf{black} &        & False \\
+\hline
+1828 & signal\_0 & red   & red   & \textbf{(BLINK)} & False \\
+1829 & signal\_0 & black & red   &        & True  \\
+\hline
+\end{tabular}
+\caption{Fragmento del CSV de salida del Video~6 (\texttt{3\_final\_results.csv}) sobre \texttt{signal\_0} en la fase de verde modificado. Las tres secciones del cuadro muestran, en orden: la histéresis funcionando (BLACK corregido a RED), la histéresis agotada (tres BLACK consecutivos aceptados como final), y la activación de \texttt{(BLINK)} cuando el recognizer vuelve a reportar RED después del apagado sostenido.}
+\label{tab:csv_histeresis}
+\end{table}
 
 \textbf{Corrección YELLOW$\to$RED, mecanismo minoritario.} En tres \textit{frames} puntuales repartidos entre los dos videos fallidos ---el \textit{frame} 1816 del Video 5, y los \textit{frames} 1776 (primer \textit{frame} de la fase, justo en la transición desde el rojo natural) y 1856 (cerca del final de la fase) del Video 6, los tres sobre \texttt{signal\_0}--- el recognizer reporta YELLOW. En las tres ocasiones el \textit{tracker} corrige el resultado a RED por la regla de seguridad asimétrica (YELLOW después de RED se rechaza). Este es el escenario que la regla está diseñada para filtrar, y los datos muestran que efectivamente actúa cuando aparece la oportunidad.
 

@@ -62,6 +62,48 @@ El video utilizado contiene un \textbf{ciclo completo del semáforo en operació
 \label{tab:ciclo_natural}
 \end{table}
 
+Las Figuras~\ref{fig:fases_ciclo_inicio} y~\ref{fig:fases_ciclo_fin} muestran un \textit{frame} representativo de cada una de las cuatro fases, para que el lector pueda asociar la tabla anterior con su contraparte visual. Las tres primeras fases (verde, amarillo y rojo) corresponden al ciclo natural del semáforo sin alteraciones; la última es la fase de verde modificado (mostrada en el caso más extremo, el Video~6), donde el color se desplazó hacia el ámbar.
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{fase_verde_natural.jpg}
+        \caption[Fase verde natural.]{Fase verde natural (\textit{frames} 0--664): semáforo en verde sin alterar, primera fase del ciclo.}
+        \label{fig:fase_verde_nat}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{fase_amarillo_natural.jpg}
+        \caption[Fase amarillo natural.]{Fase amarillo natural (\textit{frames} 665--754): transición de verde a rojo del ciclo, sin alteración.}
+        \label{fig:fase_amarillo_nat}
+    \end{subfigure}
+    \caption[Primera mitad del ciclo: verde y amarillo natural.]{Primera mitad del ciclo del semáforo: verde inicial seguido del amarillo de transición. Ambas fases son idénticas en los seis videos del test, dado que la perturbación se aplica únicamente sobre el verde final.}
+    \label{fig:fases_ciclo_inicio}
+\end{figure}
+
+Las dos fases restantes del ciclo cierran el video: el rojo natural (la fase más larga) y el verde modificado (la única fase alterada por la perturbación, donde se concentra la falla del clasificador).
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{fase_rojo_natural.jpg}
+        \caption[Fase rojo natural.]{Fase rojo natural (\textit{frames} 755--1775): fase más larga del ciclo, sin alteración.}
+        \label{fig:fase_rojo_nat}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{fase_verde_modificado.jpg}
+        \caption[Fase verde modificado.]{Fase verde modificado (\textit{frames} 1776--1858, Video~6): el verde fue desplazado al ámbar y es donde se concentra la falla del clasificador.}
+        \label{fig:fase_verde_mod}
+    \end{subfigure}
+    \caption[Segunda mitad del ciclo: rojo natural y verde modificado.]{Segunda mitad del ciclo: rojo natural y la fase final de verde modificado. Esta última es la única fase alterada por la perturbación, en seis intensidades distintas según la configuración del video (Tabla~\ref{tab:videos_test}).}
+    \label{fig:fases_ciclo_fin}
+\end{figure}
+
 Este detalle es importante porque la perturbación del test se aplica \textit{solamente} a partir del \textit{frame} 1776, modificando el verde del semáforo en la fase final del ciclo. Las fases verde inicial, amarillo y rojo del ciclo natural quedan idénticas en todos los videos del test.
 
 \subsection{Dónde se Inyecta la Perturbación}
@@ -91,7 +133,7 @@ La Figura~\ref{fig:flujo_test} muestra el flujo conceptual.
     \draw[arrow] (alterado) -- (pipeline);
     \draw[arrow] (pipeline) -- (out);
 \end{tikzpicture}
-\caption{Flujo del test. La alteración del color (naranja) se hace antes del pipeline; el módulo aislado (azul) se ejecuta sin modificaciones sobre cada video alterado y se observa la salida \textit{frame} a \textit{frame}.}
+\caption[Flujo del test (perturbación \textit{pre-pipeline}).]{Flujo del test. La alteración del color (naranja) se hace antes del pipeline; el módulo aislado (azul) se ejecuta sin modificaciones sobre cada video alterado y se observa la salida \textit{frame} a \textit{frame}.}
 \label{fig:flujo_test}
 \end{figure}
 
@@ -119,6 +161,57 @@ Sobre los píxeles afectados, se ajustaron tres parámetros: \textbf{tono} (rota
 \label{tab:videos_test}
 \end{table}
 
+La Figura~\ref{fig:grid_videos} muestra el mismo \textit{frame} de la fase final (en torno al \textit{frame} 1800) en los seis videos, para que la progresión cromática de la Tabla~\ref{tab:videos_test} sea visualmente evidente. Entre el Video~1 (verde original sin alterar) y el Video~6 (ámbar saturado) se aprecia un gradiente continuo: en los Videos~2 y~3 el verde se va tiñendo de amarillo pero conserva tonalidad fría; entre los Videos~4 y~5 el color cruza visualmente la frontera con el amarillo cálido; el Video~6 ya parece un semáforo en ámbar, no en verde.
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.31\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{video1_tono_0.jpg}
+        \caption[Video~1 (tono 0).]{Video~1 (Tono 0): verde original sin alterar.}
+        \label{fig:v1}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.31\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{video2_tono_neg20.jpg}
+        \caption[Video~2 (tono $-20$).]{Video~2 (Tono $-20$): verde-amarillento suave.}
+        \label{fig:v2}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.31\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{video3_tono_neg65.jpg}
+        \caption[Video~3 (tono $-65$).]{Video~3 (Tono $-65$): amarillo-verdoso.}
+        \label{fig:v3}
+    \end{subfigure}
+
+    \vspace{0.5cm}
+
+    \begin{subfigure}[t]{0.31\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{video4_tono_neg80.jpg}
+        \caption[Video~4 (tono $-80$).]{Video~4 (Tono $-80$): amarillo. Frontera del recognizer.}
+        \label{fig:v4}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.31\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{video5_tono_neg100.jpg}
+        \caption[Video~5 (tono $-100$).]{Video~5 (Tono $-100$): amarillo intenso. El recognizer ya falla.}
+        \label{fig:v5}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.31\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{video6_tono_neg110.jpg}
+        \caption[Video~6 (tono $-110$).]{Video~6 (Tono $-110$): ámbar tipo atardecer. Falla más intensa.}
+        \label{fig:v6}
+    \end{subfigure}
+    \caption[Progresión cromática de los 6 videos del test.]{Progresión cromática de la perturbación en los seis videos del test, capturada sobre el mismo \textit{frame} de la fase final (verde modificado). Las cuatro fases anteriores del ciclo (verde natural, amarillo natural, rojo) son idénticas en los seis videos; lo único que cambia es el verde de la fase final.}
+    \label{fig:grid_videos}
+\end{figure}
+
 \subsection{Ejecución del Test}
 
 Cada uno de los seis videos se procesó con el módulo aislado, registrando para cada \textit{frame} (de los 1\,859 \textit{frames} totales del video, a 30\,fps) la salida del recognizer (color clasificado por la red) y la salida del \textit{tracker} (color revisado tras aplicar las reglas temporales). Esto permite separar lo que clasifica directamente la CNN de lo que el \textit{tracker} corrige a partir del historial, comparando \texttt{pred\_color} (output del recognizer) con \texttt{final\_color} (output del \textit{tracker}) en una columna por \textit{frame}.
@@ -141,8 +234,8 @@ En el sexto video, con la alteración más fuerte (tono $-110$, similar a una il
 
 \begin{table}[H]
 \centering
-\small
-\begin{tabular}{|c|p{2.8cm}|c|p{3.5cm}|p{2.6cm}|p{2cm}|}
+\footnotesize
+\begin{tabularx}{\textwidth}{|c|X|c|X|X|c|}
 \hline
 \textbf{Frames} & \textbf{Fase del ciclo} & \textbf{Esperado} & \textbf{Recognizer (pred)} & \textbf{Tracker (final)} & \textbf{Modif} \\
 \hline
@@ -154,8 +247,8 @@ En el sexto video, con la alteración más fuerte (tono $-110$, similar a una il
 \hline
 1776--1858 & VERDE MODIFICADO & GREEN & black 73, red 51, yellow 2 & red 123, black 3 & 72 \\
 \hline
-\end{tabular}
-\caption{Salidas del recognizer y del \textit{tracker} en el Video 6, agrupadas por fase del ciclo del semáforo. Conteos en cantidad de detecciones (cada \textit{frame} produce típicamente dos detecciones, una por semáforo).}
+\end{tabularx}
+\caption[Salidas del recognizer y del \textit{tracker} en el Video 6 por fase.]{Salidas del recognizer y del \textit{tracker} en el Video 6, agrupadas por fase del ciclo del semáforo. Conteos en cantidad de detecciones (cada \textit{frame} produce típicamente dos detecciones, una por semáforo).}
 \label{tab:fases_video6}
 \end{table}
 

@@ -102,7 +102,7 @@ La Figura~\ref{fig:pipeline_alto_nivel} muestra las cinco etapas como bloques. L
     \draw[arrow] (rec) -- (trk);
     \draw[arrow] (trk) -- (out);
 \end{tikzpicture}
-\caption{Pipeline del módulo TLR de Apollo: cinco etapas secuenciales que transforman un \textit{frame} de cámara más información geográfica en un conjunto de estados de semáforos identificados.}
+\caption[Pipeline del módulo TLR de Apollo (5 etapas).]{Pipeline del módulo TLR de Apollo: cinco etapas secuenciales que transforman un \textit{frame} de cámara más información geográfica en un conjunto de estados de semáforos identificados.}
 \label{fig:pipeline_alto_nivel}
 \end{figure}
 
@@ -150,7 +150,7 @@ La Figura~\ref{fig:pipeline_alto_nivel} muestra las cinco etapas como bloques. L
     \draw[arrow] (15,-8.5) -- (16.8,-8.5);
 \end{tikzpicture}%
 }
-\caption{Diagrama de secuencia del pipeline TLR: cada flecha representa el dato que cruza de una etapa a la siguiente. Las cantidades $M$ (cuántos semáforos hay en el HD-Map a esa distancia), $N$ (cuántas detecciones produjo la red) y $K \le \min(M,N)$ (cuántas asignaciones encontró el húngaro) varían por \textit{frame}.}
+\caption[Diagrama de secuencia del pipeline TLR.]{Diagrama de secuencia del pipeline TLR: cada flecha representa el dato que cruza de una etapa a la siguiente. Las cantidades $M$ (cuántos semáforos hay en el HD-Map a esa distancia), $N$ (cuántas detecciones produjo la red) y $K \le \min(M,N)$ (cuántas asignaciones encontró el húngaro) varían por \textit{frame}.}
 \label{fig:diagrama_secuencia}
 \end{figure}
 

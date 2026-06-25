@@ -49,7 +49,7 @@ src/tlr/
 |-- feature_net.py           # Backbone de features
 |-- dfmb_roi_align.py        # ROI Align layer
 |-- tools/utils.py           # Preprocesamiento, NMS, ProjectionROI
-|-- weights/                 # tl.torch, vert.torch, hori.torch, quad.torch
+|-- weights/                 # tl, vert, hori, quad (.torch)
 `-- confs/                   # Configuraciones de capas (JSON)
 \end{verbatim}
 
@@ -146,7 +146,7 @@ Lo que se preservó exactamente del original:
 \begin{itemize}
     \item Las cinco etapas y su orden.
     \item Los cuatro modelos pre-entrenados (mismos pesos).
-    \item Todos los parámetros numéricos enumerados en la Tabla~\ref{tab:parametros}.
+    \item Todos los parámetros numéricos enumerados en las Tablas~\ref{tab:parametros_pre} y~\ref{tab:parametros_post}.
     \item Las cuatro reglas de \textit{tracking} (GREEN$\to$YELLOW$\to$RED, histéresis para BLACK, \textit{blink} solo en verde, \textit{reset} a 1.5\,s).
     \item El \texttt{signal\_id} como llave de identidad para el \textit{tracking}.
     \item El comportamiento de \texttt{Prob2Color} (\textit{threshold} 0.5, forzar BLACK debajo del umbral).

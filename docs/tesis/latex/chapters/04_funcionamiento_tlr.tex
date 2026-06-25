@@ -5,13 +5,61 @@ Este capítulo funciona como referencia técnica del módulo TLR original. Mient
 
 El capítulo sigue el mismo orden del pipeline: modelos pre-entrenados, preprocesamiento, detección, asignación, reconocimiento y \textit{tracking}. Cierra con una tabla resumen de todos los parámetros numéricos.
 
+\section{Vista Panorámica de la Salida del Pipeline}
+\label{sec:funcionamiento_panoramica}
+
+Antes de entrar en el detalle técnico de cada etapa, conviene tener una imagen mental concreta de qué produce el módulo a lo largo del pipeline. Las Figuras~\ref{fig:pipeline_outputs_in} y~\ref{fig:pipeline_outputs_out} muestran, sobre un mismo \textit{frame} de entrada, la salida visualizada de las etapas que efectivamente producen un artefacto observable: la primera figura cubre la \textit{entrada y detección} (Etapas~1 y~2), y la segunda el \textit{reconocimiento y salida final} (Etapas~4 y~5). La Etapa~3 (asignación por algoritmo húngaro) no produce una salida visual propia: se limita a vincular las cajas de la Etapa~2 con las \textit{projection boxes} de la Etapa~1, y su efecto se observa indirectamente en el hecho de que cada caja del detector aparece en las etapas siguientes con un \texttt{signal\_id} concreto.
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{pipeline_01_projection_bbox.jpg}
+        \caption[Etapa 1: \textit{projection box} (entrada del HD-Map).]{Etapa 1 — \textit{Projection box}: rectángulo en píxeles donde el HD-Map predice que aparece el semáforo (entrada al pipeline).}
+        \label{fig:out_proj}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{pipeline_02_detection_output.jpg}
+        \caption[Etapa 2: detección.]{Etapa 2 — Detección: \textit{bounding boxes} ajustados al semáforo real dentro de la \textit{projection box} expandida, sin identidad.}
+        \label{fig:out_det}
+    \end{subfigure}
+    \caption[Salida del pipeline TLR: entrada y detección.]{Entrada y detección. La Etapa~1 entrega al pipeline la región donde se espera ver al semáforo (\textit{projection box} del HD-Map); la Etapa~2 produce \textit{bounding boxes} ajustados al semáforo real dentro de esa región. Las cajas todavía no llevan identidad: la Etapa~3 las asignará a cada \textit{projection box} en el paso siguiente.}
+    \label{fig:pipeline_outputs_in}
+\end{figure}
+
+Una vez que cada detección quedó vinculada a una \textit{projection box} (Etapa~3, no visible), las dos etapas restantes asignan estado al semáforo y aplican las reglas temporales. La Figura~\ref{fig:pipeline_outputs_out} muestra esos dos pasos finales sobre el mismo \textit{frame}.
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{pipeline_03_recognition_output.jpg}
+        \caption[Etapa 4: reconocimiento.]{Etapa 4 — Reconocimiento: cada \textit{bounding box} del detector recibe un color clasificado por el recognizer (\texttt{red}, \texttt{yellow}, \texttt{green} o \texttt{black}).}
+        \label{fig:out_rec}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{pipeline_04_final_output.jpg}
+        \caption[Etapa 5: \textit{tracking} (salida final).]{Etapa 5 — \textit{Tracking}: salida final del módulo con \texttt{signal\_id} persistente y color revisado tras aplicar las reglas temporales.}
+        \label{fig:out_final}
+    \end{subfigure}
+    \caption[Salida del pipeline TLR: reconocimiento y final.]{Reconocimiento y salida final. La Etapa~4 clasifica el color de cada semáforo detectado; la Etapa~5 aplica las reglas temporales del \textit{tracker} (histéresis, regla asimétrica de seguridad) y devuelve el resultado final con el \texttt{signal\_id} persistente del HD-Map.}
+    \label{fig:pipeline_outputs_out}
+\end{figure}
+
+Las secciones que siguen explican cada una de estas etapas en detalle: qué transformaciones aplica, qué parámetros usa y qué reglas de decisión rigen el comportamiento que se observa en las imágenes anteriores.
+
 \section{Modelos Pre-entrenados}
 
 El TLR utiliza cuatro modelos pre-entrenados en formato Caffe, todos parte del repositorio de Apollo. Tres de ellos están especializados por orientación del semáforo.
 
 \begin{table}[H]
 \centering
-\begin{tabular}{|l|l|p{4.5cm}|c|c|}
+\footnotesize
+\begin{tabularx}{\textwidth}{|l|l|X|c|c|}
 \hline
 \textbf{Modelo} & \textbf{Archivo} & \textbf{Propósito} & \textbf{Input} & \textbf{Output} \\
 \hline
@@ -23,8 +71,8 @@ Recognizer horizontal & \texttt{hori.torch} & Clasificar color (semáforos horiz
 \hline
 Recognizer \textit{quad} & \texttt{quad.torch} & Clasificar color (arreglo $2\times2$) & 64$\times$64$\times$3 & [B, R, Y, G] \\
 \hline
-\end{tabular}
-\caption{Modelos pre-entrenados del TLR. La salida [B, R, Y, G] representa probabilidades de \textit{black}, \textit{red}, \textit{yellow}, \textit{green}. Los recognizers tienen pesos distintos pero la misma arquitectura general: 5 capas convolucionales con \textit{batch normalization}, \textit{pooling} y una capa \textit{fully-connected} final.}
+\end{tabularx}
+\caption[Modelos pre-entrenados del TLR.]{Modelos pre-entrenados del TLR. La salida [B, R, Y, G] representa probabilidades de \textit{black}, \textit{red}, \textit{yellow}, \textit{green}. Los recognizers tienen pesos distintos pero la misma arquitectura general: 5 capas convolucionales con \textit{batch normalization}, \textit{pooling} y una capa \textit{fully-connected} final.}
 \end{table}
 
 El detector sigue una arquitectura tipo \textit{Faster R-CNN} con \textit{Region Proposal Network} (RPN) y \textit{ROI Pooling} basado en DFMB-PSROIAlign. Su salida por detección tiene la forma \texttt{[img\_id, x1, y1, x2, y2, bg, vert, quad, hori]}: las coordenadas del \textit{bounding box} y un vector de probabilidades sobre cuatro clases (fondo, vertical, \textit{quad}, horizontal).
@@ -99,9 +147,10 @@ con \texttt{crop\_scale}~$=2.5$ y \texttt{min\_crop\_size}~$=270$ píxeles. La \
 
 La región recortada se redimensiona a 270$\times$270 píxeles (interpolación bilineal) y se normaliza restando las medias por canal en orden BGR (\texttt{detection.cc}):
 
-\begin{equation}
-\texttt{normalized} = \texttt{pixel} - \texttt{means\_det}, \quad \texttt{means\_det} = [102.98,\ 115.95,\ 122.77]
-\end{equation}
+\begin{align*}
+\texttt{normalized} &= \texttt{pixel} - \texttt{means\_det}, \\
+\texttt{means\_det} &= [102.98,\ 115.95,\ 122.77]
+\end{align*}
 
 Este tensor es lo que finalmente entra al detector.
 
@@ -204,10 +253,10 @@ Se construye una matriz $M \times N$. Para cada par (\texttt{hdmap}[i], \texttt{
 \textbf{Score de distancia (gaussiana 2D, $\sigma = 100$):}
 
 \begin{equation}
-\texttt{distance\_score} = \exp\!\left(-\tfrac{1}{2}\left(\tfrac{\Delta x}{\sigma_x}\right)^2 - \tfrac{1}{2}\left(\tfrac{\Delta y}{\sigma_y}\right)^2\right), \quad \sigma_x = \sigma_y = 100.0
+\texttt{distance\_score} = \exp\!\left(-\tfrac{1}{2}\left(\tfrac{\Delta x}{\sigma_x}\right)^2 - \tfrac{1}{2}\left(\tfrac{\Delta y}{\sigma_y}\right)^2\right)
 \end{equation}
 
-donde $\Delta x = c_x^{\text{det}} - c_x^{\text{proj}}$ y $\Delta y = c_y^{\text{det}} - c_y^{\text{proj}}$ son las diferencias entre los centros de la detección y de la \texttt{projection\_roi}, en píxeles.
+donde $\Delta x = c_x^{\text{det}} - c_x^{\text{proj}}$ y $\Delta y = c_y^{\text{det}} - c_y^{\text{proj}}$ son las diferencias entre los centros de la detección y de la \texttt{projection\_roi}, en píxeles, y $\sigma_x = \sigma_y = 100.0$ define el ancho de la gaussiana.
 
 \textbf{Score de detección (con \textit{clip} a 0.9):}
 
@@ -292,10 +341,10 @@ Para cada detección:
     \item Se aplica normalización con medias BGR distintas a las del detector y un factor de escala:
 \end{enumerate}
 
-\begin{equation}
-\texttt{normalized} = (\texttt{pixel} - \texttt{means\_rec}) \cdot \texttt{scale},\quad
-\texttt{means\_rec} = [66.56,\ 66.58,\ 69.06],\ \texttt{scale} = 0.01
-\end{equation}
+\begin{align*}
+\texttt{normalized} &= (\texttt{pixel} - \texttt{means\_rec}) \cdot \texttt{scale}, \\
+\texttt{means\_rec} &= [66.56,\ 66.58,\ 69.06], \quad \texttt{scale} = 0.01
+\end{align*}
 
 \subsection{Inferencia y Prob2Color}
 
@@ -393,54 +442,66 @@ Como se mencionó arriba, si pasaron más de 1.5\,s desde el último \texttt{upd
 
 \section{Resumen de Parámetros}
 
-La Tabla~\ref{tab:parametros} agrupa todos los parámetros numéricos del módulo, con su archivo fuente y propósito.
+Las Tablas~\ref{tab:parametros_pre} y~\ref{tab:parametros_post} agrupan todos los parámetros numéricos del módulo, con su archivo fuente y propósito. La división responde a las dos mitades del pipeline: la primera tabla cubre las etapas de \textit{entrada y selección} (preprocesamiento, detección y asignación); la segunda cubre las etapas de \textit{decisión sobre el semáforo} (reconocimiento y \textit{tracking}).
 
 \begin{table}[H]
 \centering
-\small
-\begin{tabular}{|l|c|l|p{4.7cm}|}
+\footnotesize
+\begin{tabularx}{\textwidth}{|l|c|l|X|}
 \hline
 \textbf{Parámetro} & \textbf{Valor} & \textbf{Archivo} & \textbf{Propósito} \\
 \hline
 \multicolumn{4}{|l|}{\textit{Preprocesamiento}} \\
 \hline
-\texttt{query\_radius} & 150\,m & region\_proposal\_component.cc & Radio de query al HD-Map \\
-\texttt{crop\_scale} & 2.5 & cropbox.cc & Expansión de la \texttt{projection\_roi} \\
-\texttt{min\_crop\_size} & 270\,px & cropbox.cc & Tamaño mínimo del \textit{crop} \\
-\texttt{means\_det} BGR & [102.98, 115.95, 122.77] & detection.cc & Medias para normalización del detector \\
+\texttt{query\_radius} & 150\,m & \texttt{region\_proposal.cc} & Radio de query al HD-Map \\
+\texttt{crop\_scale} & 2.5 & \texttt{cropbox.cc} & Expansión de la \texttt{projection\_roi} \\
+\texttt{min\_crop\_size} & 270\,px & \texttt{cropbox.cc} & Tamaño mínimo del \textit{crop} \\
+\texttt{means\_det} BGR & [102.98, 115.95, 122.77] & \texttt{detection.cc} & Medias para normalización del detector \\
 \hline
 \multicolumn{4}{|l|}{\textit{Detección}} \\
 \hline
-\texttt{input\_size} & 270$\times$270 & detection.cc & Resolución de entrada al detector \\
+\texttt{input\_size} & 270$\times$270 & \texttt{detection.cc} & Resolución de entrada al detector \\
 \texttt{nms\_rpn} & 0.7 & RPN interno & IoU \textit{threshold} en RPN \\
 \texttt{nms\_rcnn} & 0.5 & RCNN interno & IoU \textit{threshold} en RCNN \\
-\texttt{nms\_global} & 0.6 & detection.cc:381-390 & IoU \textit{threshold} global \\
+\texttt{nms\_global} & 0.6 & \texttt{detection.cc:381} & IoU \textit{threshold} global \\
 \hline
 \multicolumn{4}{|l|}{\textit{Asignación}} \\
 \hline
-\texttt{distance\_weight} & 0.7 & select.cc & Peso de distancia en costo combinado \\
-\texttt{confidence\_weight} & 0.3 & select.cc & Peso de confianza en costo combinado \\
-\texttt{gaussian\_sigma} & 100.0 & select.cc & $\sigma$ del \textit{score} gaussiano 2D \\
-\texttt{max\_detection\_score} & 0.9 & select.cc & \textit{Clip} máximo del \textit{score} \\
+\texttt{distance\_weight} & 0.7 & \texttt{select.cc} & Peso de distancia en costo combinado \\
+\texttt{confidence\_weight} & 0.3 & \texttt{select.cc} & Peso de confianza en costo combinado \\
+\texttt{gaussian\_sigma} & 100.0 & \texttt{select.cc} & $\sigma$ del \textit{score} gaussiano 2D \\
+\texttt{max\_detection\_score} & 0.9 & \texttt{select.cc} & \textit{Clip} máximo del \textit{score} \\
+\hline
+\end{tabularx}
+\caption{Parámetros de las etapas de entrada y selección del módulo TLR (preprocesamiento, detección y asignación).}
+\label{tab:parametros_pre}
+\end{table}
+
+\begin{table}[H]
+\centering
+\footnotesize
+\begin{tabularx}{\textwidth}{|l|c|l|X|}
+\hline
+\textbf{Parámetro} & \textbf{Valor} & \textbf{Archivo} & \textbf{Propósito} \\
 \hline
 \multicolumn{4}{|l|}{\textit{Reconocimiento}} \\
 \hline
-\texttt{vert\_shape} & 96$\times$32 & classify.cc & Input del recognizer vertical \\
-\texttt{hori\_shape} & 32$\times$96 & classify.cc & Input del recognizer horizontal \\
-\texttt{quad\_shape} & 64$\times$64 & classify.cc & Input del recognizer \textit{quad} \\
-\texttt{means\_rec} BGR & [66.56, 66.58, 69.06] & classify.cc & Medias para normalización de recognizers \\
-\texttt{scale\_factor} & 0.01 & classify.cc & Escala post-normalización \\
-\texttt{classify\_threshold} & 0.5 & recognition.cc:48-65 & Umbral en \texttt{Prob2Color} \\
+\texttt{vert\_shape} & 96$\times$32 & \texttt{classify.cc} & Input del recognizer vertical \\
+\texttt{hori\_shape} & 32$\times$96 & \texttt{classify.cc} & Input del recognizer horizontal \\
+\texttt{quad\_shape} & 64$\times$64 & \texttt{classify.cc} & Input del recognizer \textit{quad} \\
+\texttt{means\_rec} BGR & [66.56, 66.58, 69.06] & \texttt{classify.cc} & Medias para normalización de recognizers \\
+\texttt{scale\_factor} & 0.01 & \texttt{classify.cc} & Escala post-normalización \\
+\texttt{classify\_threshold} & 0.5 & \texttt{recognition.cc:48} & Umbral en \texttt{Prob2Color} \\
 \hline
 \multicolumn{4}{|l|}{\textit{Tracking}} \\
 \hline
-\texttt{revise\_time\_s} & 1.5\,s & semantic\_decision.cc & Ventana temporal de validación \\
-\texttt{blink\_threshold\_s} & 0.55\,s & semantic\_decision.cc & Umbral para detectar \textit{blink} \\
-\texttt{hysteretic\_threshold} & 1 & semantic\_decision.cc & Frames para aceptar transición a BLACK \\
+\texttt{revise\_time\_s} & 1.5\,s & \texttt{semantic\_decision.cc} & Ventana temporal de validación \\
+\texttt{blink\_threshold\_s} & 0.55\,s & \texttt{semantic\_decision.cc} & Umbral para detectar \textit{blink} \\
+\texttt{hysteretic\_threshold} & 1 & \texttt{semantic\_decision.cc} & Frames para aceptar transición a BLACK \\
 \hline
-\end{tabular}
-\caption{Parámetros numéricos del módulo TLR de Apollo, agrupados por etapa.}
-\label{tab:parametros}
+\end{tabularx}
+\caption{Parámetros de las etapas de decisión del módulo TLR (reconocimiento y \textit{tracking}).}
+\label{tab:parametros_post}
 \end{table}
 
 \section{Resumen}
