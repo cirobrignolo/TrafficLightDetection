@@ -2,8 +2,11 @@ __pycache__
 *.egg-info
 build
 input_frames/*
+!input_frames/.gitkeep
 output/*
+!output/.gitkeep
 projection_verification/*
+!projection_verification/.gitkeep
 # Claude Code documentation
 CLAUDE.md
 .claude/
