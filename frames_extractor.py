@@ -1,12 +1,25 @@
 import cv2
 import os
 import math
+import argparse
 
-# Configuración del video de entrada
-video_path = 'input/sample_video.mp4'  # Ruta relativa al video
-output_dir = 'input_frames/'  # Guardar en esta misma carpeta (reemplazará los frames existentes)
+# ─── PARÁMETROS POR LÍNEA DE COMANDOS ──────────────────────────────────────────
+parser = argparse.ArgumentParser(
+    description="Extrae frames de un video y los guarda en input_frames/")
+parser.add_argument(
+    "video",
+    help="Nombre del video dentro de input/ (ej: sample_video.mp4) o ruta al archivo")
+parser.add_argument(
+    "interval", nargs="?", type=int, choices=[1, 2, 3, 4, 5, 10], default=1,
+    help="Guardar 1 de cada N frames. Opciones: 1, 2, 3, 4, 5, 10 (default: 1)")
+args = parser.parse_args()
 
-print("🎥 AUTO-EXTRACCIÓN DE FRAMES PARA VIDEO DOBLE CHICO")
+# Si el video existe tal cual, usar esa ruta; si no, buscarlo dentro de input/
+video_path = args.video if os.path.exists(args.video) else os.path.join('input', args.video)
+output_dir = 'input_frames/'  # Guardar en esta carpeta (reemplazará los frames existentes)
+frame_interval = args.interval
+
+print("🎥 EXTRACCIÓN DE FRAMES")
 print(f"📂 Input: {video_path}")
 print(f"📁 Output: {output_dir}")
 
@@ -25,11 +38,7 @@ print(f"   FPS: {fps:.2f}")
 print(f"   Total frames: {total_frames}")
 print(f"   Duración: {duration:.2f}s")
 
-# CONFIGURACIÓN PARA PRUEBAS: Extraer 1 de cada 5 frames (reduce cantidad para testing)
-# Para producción: usar frame_interval = 1 (todos los frames)
-frame_interval = 4
-
-print(f"📸 Guardando 1 frame cada {frame_interval} frames (modo pruebas)")
+print(f"📸 Guardando 1 frame cada {frame_interval} frames")
 print(f"📈 Frames estimados: ~{total_frames // frame_interval}")
 
 # Limpiar frames existentes
